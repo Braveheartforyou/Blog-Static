@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Document</title>
+    <link rel="stylesheet" href="./index.css">
+</head>
+<body>
+    <div class="title">测试Service Worker</div>
+    <script>
+        // 判断浏览器是否支持serviceWorker
+        if ('serviceWorker' in navigator) {
+            // 在页面加载后
+            window.addEventListener('load', function () {
+                // 通过navigator.serviceWorker.register 注册'./sw.js
+                navigator.serviceWorker.register('./sw.js')
+                .then(reg => { //注册成功
+                    console.log('注册成功', reg)
+                }).catch(err => { //注册成功
+                    console.log('注册失败', err)
+                })
+            });
+        } else {
+            console.log('当前浏览器不支持SW')
+        }
+        setTimeout(() => {
+            const img = new Image();
+            img.width = 300;
+            img.src = './index.png';
+            img.style.display = 'block';
+            document.body.appendChild(img);
+        }, 3000);
+    </script>
+    <script src="./app.js"></script>
+</body>
+</html>
