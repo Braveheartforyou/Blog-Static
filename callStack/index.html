@@ -49,5 +49,20 @@
      solid();</script>
     <link rel="stylesheet" href="./index.css">
     <script src="./index.js"></script>
+    <script>
+        "use strict";
+        function one () {
+            return two();
+        }
+        function two () {
+            return three();
+        }
+        function three () {
+            throw new Error();
+            console.trace();
+            return false;
+        }
+        one();
+    </script>
   </body>
 </html>
