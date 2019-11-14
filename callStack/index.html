@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+    <title>Document</title>
+  </head>
+  <body>
+    <div id="wrap">
+      <nav>
+        <button id="next">Next &gt;</button>
+        <span id="pagination"></span>
+      </nav>
+      <div id="main">
+        <section id="view-code">
+          <h3>Code</h3>
+          <div class="inner"></div>
+        </section>
+
+        <section id="view-stack">
+          <h3>Stack</h3>
+          <ol reversed class="inner"></ol>
+        </section>
+      </div>
+      <section id="view-console">
+        <h3>Console</h3>
+        <div class="inner"></div>
+      </section>
+
+      <section id="view-readout">
+        <div class="inner"></div>
+      </section>
+    </div>
+    <script id="example-code" type="text/template">function add(a, b) {
+        return a + b;
+     }
+     
+     function liquid() {
+        var x = add(2, 2);
+        console.log('Snaaaake!', x);
+     }
+     
+     function solid() {
+        liquid();
+        console.log('Brother!');
+     }
+     
+     solid();</script>
+    <link rel="stylesheet" href="./index.css">
+    <script src="./index.js"></script>
+  </body>
+</html>
