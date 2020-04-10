@@ -1,0 +1,28 @@
+Ctrl + J 合并一行
+Alt + Shift + ↑ 在本行前一行插入本行
+Alt + Shift + ↓ 在本行后一行插入本行
+Alt + ↑ 本行向上移动一行
+Alt + ↓ 本行向下移动一行
+Cmd + Shift + P 搜索、配置等等
+Cmd + Shift + K 删除整行
+Ctrl + Shift + ` 命令行
+Cmd + / 注释单行
+vuec 生成vue 代码片段
+react 生成react 代码片段
+Alt + Shift + F 格式化代码 + pettier 插件
+Cmd + Shift + L 生成console.log() + console utils插件
+Alt + Z px 转换 rem  + px转rem插件
+
+
+注释规则:
+
+add jsdoc comments
+
+Ctrl + Alt + D  选中方法  组合键2次
+
+@param 参数
+@return 返回
+
+TODO: 描述方法
+? 注释不明确处 有疑问处
+! 重要注释、警告注释
