@@ -59,20 +59,18 @@ count.value++
 
 ```js
   const state = reacive({
-    count: 0
+    sum: 0
   })
   const count = ref(0)
   watch(
     [state, count], // 第一个参数只能是 一个reactive对象、一个ref对象、一个数组；或者 getter/effect Functions
-    [(state, preState) => {
-      console.log('state, preState: ', state, preState);
-      // 'state, preState: ' 1, 0
-    }, (count, preCount) => {
-      console.log('count, preCount: ', state, preState);
-      // 'state, preState: ' 1, 0
-    }]
-
+    ([state, preState], [count, preCount]) => {
+      console.log('state, preState: ', state.count, preState, count.count, preCount);
+    }
   )
-  state.count++
-  count++
+  state.sum++ // HelloWorld.vue?fdab:83 state, preState:  1 0 1 0
+  count.value++
+  state.count++ // HelloWorld.vue?fdab:83 state, preState:  1 0 1 0
+  count++ // state, preState:  1 1 1 0
+
 ```
