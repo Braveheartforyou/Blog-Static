@@ -211,3 +211,14 @@ export default {
 </script>
 ```
 
+## watch和watchEffect 区别
+
+通过上面的代码大致知道`watch`和`watchEffect`的使用方式，后面会大致梳理一下源码。这里主要梳理一下它们之间的区别。
+
+- `watchEffect`不需要指定要侦听的源，它会自动收集回调函数内部使用的响应式对象的依赖；`watch`要指定要侦听的源，并且侦听的源必须是`一个reactive对象、一个ref对象、一个数组；或者 getter/effect Functions`其中的一个。
+- `watchEffect`可以通过`flush: pre || post || sync`属性指定回调函数执行的时间，默认是`pre`; `watch`可以通过`immediate:Boolean` 设置是否立即执行一次， `deep:Boolean`设置是否深层观测。
+- `watchEffect`中的回调函数会立即执行一次；`watch`中的回调函数不会立即执行一次，只有在侦听的源数据变化时，回调函数才会执行。（可以通过`immdeiate: true` 让它立即执行一次）。
+- 因为`watchEffect`中不需要指定要侦听的source，所以它必须要执行一次来收集函数内部的依赖。
+- `watchEffect`拿不到值旧值；`watch`就可以拿到旧值和新值。
+
+
