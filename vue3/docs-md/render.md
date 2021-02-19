@@ -16,5 +16,54 @@
 
 ```js
   import { createApp, render, h } from 'vue'
-  const app 
+  const app = createApp({
+    data () {
+      return {
+        title: 'hello world'
+      }
+    },
+    render () {
+      return h(
+        'h', // 标签名称
+        this.title // 标签内容
+      )
+    }
+  })
+  app.mount('#app')
+```
+
+`render函数`在Vue 3.0中基本上可以用来代替`template模块`，如果两个同时存在还是`render函数`的优先级高。
+
+## h函数源码简析
+
+源码在： **vue-next(项目) => packages(文件夹) => runtime-core(文件夹) => src (文件夹) => h.ts(文件): 161 ~ 184 行。**
+
+```js
+// Actual implementation
+export function h(type: any, propsOrChildren?: any, children?: any): VNode {
+  // 获取入参个数，type为必传参数
+  const l = arguments.length
+  // 只传了两个参数
+  if (l === 2) {
+    // propsOrChildren 判断类型为 Object 并且 不是 Array
+    if (isObject(propsOrChildren) && !isArray(propsOrChildren)) {
+      // single vnode without props
+      if (isVNode(propsOrChildren)) {
+        return createVNode(type, null, [propsOrChildren])
+      }
+      // props without children
+      return createVNode(type, propsOrChildren)
+    } else {
+      // omit props
+      return createVNode(type, null, propsOrChildren)
+    }
+  } else {
+    if (l > 3) {
+      children = Array.prototype.slice.call(arguments, 2)
+    } else if (l === 3 && isVNode(children)) {
+      children = [children]
+    }
+    return createVNode(type, propsOrChildren, children)
+  }
+}
 ```
