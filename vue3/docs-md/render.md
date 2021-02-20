@@ -24,7 +24,7 @@
     },
     render () {
       return h(
-        'h', // 标签名称
+        'h1', // 标签名称
         this.title // 标签内容
       )
     }
@@ -48,7 +48,9 @@ export function h(type: any, propsOrChildren?: any, children?: any): VNode {
     // propsOrChildren 判断类型为 Object 并且 不是 Array
     if (isObject(propsOrChildren) && !isArray(propsOrChildren)) {
       // single vnode without props
+      // 如果传入的第二个参数是一个 VNode节点
       if (isVNode(propsOrChildren)) {
+        // 通过createVNode 创建VNode节点
         return createVNode(type, null, [propsOrChildren])
       }
       // props without children
