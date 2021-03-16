@@ -1,6 +1,20 @@
+## webpack编译流程
+
+- Entry: 指定`webpack`开始构建的入口模块，从该模块开始构建并计算出直接或间接依赖的模块或者库。
+- Output：告诉`webpack`如何命名输出的文件以及输出的目录
+- Module: 模块，在 `Webpack` 里一切皆模块，一个模块对应着一个文件。Webpack 会从配置的 `Entry` 开始递归找出所有依赖的模块。
+- Chunk：`coding split`的产物，我们可以对一些代码打包成一个单独的chunk，比如某些公共模块，去重，更好的利用缓存。或者按需加载某些功能模块，优化加载时间。在`webpack3`及以前我们都利用`CommonsChunkPlugin`将一些公共代码分割成一个`chunk`，实现单独加载。在webpack4 中`CommonsChunkPlugin`被废弃，使用`SplitChunksPlugin`
+- Loader：模块转换器，用于把模块原内容按照需求转换成新内容。
+- Plugin：扩展插件，在 Webpack 构建流程中的特定时机会广播出对应的事件，插件可以监听这些事件的发生，在特定时机做对应的事情。
+
+整体的编译流程大致如图所示，[简单的编译流程推荐文章](https://juejin.cn/post/6844903935828819981/)。
+
+![webpack 编译流程](https://user-gold-cdn.xitu.io/2019/9/5/16d00393b89a5d42?imageslim)
 ## webpack入口
 
-首先明确一点本文章只关注webpack编译流程中主要流程。在保证记录主流程的基础上尽量说道各个主要的细节点。
+首先明确一点本文章只关注webpack编译流程中主要流程，会按照上图所以的打包流程按照源码来记录。在保证记录主流程的基础上尽量说道各个主要的细节点。
+
+`Webpack`可以将其理解是一种基于**事件流**的编程范例，一个插件合集。而将这些插件控制在**webapck事件流**上的运行的就是webpack自己写的基础类`Tapable`。`Webpack` 的事件流机制应用了**观察者模式**，和 `Node.js` 中的 `EventEmitter`非常相似。
 
 webpack源码内部主要的概念：
 
@@ -33,6 +47,7 @@ webpack源码代码的起点是在`../lib/index.js`文件中，导出的webpack�
 
 ```js
   // lib/webpack.js
+  // callback传入为空
   const webpack = ((options, callback) => {
     const create = () => {
       // 校验传入的options类型是否符合webpack内部定义的webpackOptionsSchema范式
@@ -53,6 +68,8 @@ webpack源码代码的起点是在`../lib/index.js`文件中，导出的webpack�
         watchOptions = options.watchOptions || {};
       }
     }
+    // 返回创建的compiler、watch、watchOptions对象
+    return { compiler, watch, watchOptions };
   })
 ```
 
@@ -212,6 +229,124 @@ const createCompiler = rawOptions => {
 
 `webpack`的插件的编写要提供一个`apply`方法，在初始化webpack插件时，会调用插件的`apply`方法，并且会传入`compiler`对象，方便在插件中做绑定`compiler.hooks`上的钩子函数和访问当前配置。
 
-其实webpack基本上是
+### webpack 方法
 
-## 设置options
+在执行完成`createCompiler`方法后，返回`create`方法创建的`compiler`对象，代码如下：
+
+```js
+  // callback传入为undefined
+  const webpack = ((options, callback) => {
+    // 上面详细看过的函数，这里不多做解释
+    const create = () => { // ...省略代码 }
+    if (callback) {
+      // 省略代码。。。
+    } else {
+      // 通过create()方法会返回 三个对象compiler、watch、watchOptions对象
+      // compiler中间储存了当前编译的的配置
+      // watch、watchOptions都为undefined
+      const { compiler, watch } = create();
+      if (watch) {
+        util.deprecate(
+          () => {},
+          "A 'callback' argument need to be provided to the 'webpack(options, callback)' function when the 'watch' option is set. There is no way to handle the 'watch' option without a callback.",
+          "DEP_WEBPACK_WATCH_WITHOUT_CALLBACK"
+        )();
+      }
+      // 返回当前编译环境的compiler对象
+      return compiler;
+    }
+  })
+```
+
+在执行完成`const compiler = webpack(config);`会返回当前编译环境的`compiler`对象，在这一步的时候当前编译环境中的`options`都配置完成。下一步执行调试代码中的`compiler.run(() => {})`。
+
+## compiler.run
+
+下面开始进入编译流程，执行`debug/start.js`中的流程`compiler.run`，代码如下：
+
+```js
+// 进入compiler.run流程，并且传入回调函数，收集编译信息和报错信息
+compiler.run((err, stats)=>{
+  if(err){
+      console.error(err)
+  }else{
+      console.log(stats)
+  }
+})
+```
+
+首先要了解`compiler`类的实现才能知道后续流程执行的过程。代码如下：
+
+**./lib/compiler**
+
+```js
+const Cache = require("./Cache"); // ./lib/Cache
+// ./lib/compiler
+class Compuler {
+  constructor(context) {
+    // 主要打变量赋值
+    this.hooks = Object.freeze({
+      // 定义各种的hooks
+      
+    })
+    // 赋值其它变量
+    /** @type {boolean} */
+    this.idle = false;
+    // 实例化一个Cache类
+    this.cache = new Cache();
+    // 省略代码....
+  }
+  // 获取cache
+  getCache(name) {}
+
+  run (callback) {
+    // 判断代码是否正在执行
+    if (this.running) {
+      return callback(new ConcurrentCompilationError());
+    }
+    // 执行完成的回调 暂时先不看 后面会看到
+    const finalCallback = (err, stats) => {
+      // 省略代码....
+    };
+    const startTime = Date.now();
+    this.running = true;
+    // 下面this.compile中传入的回调函数 后面会具体说
+    const onCompiled = (err, compilation) => {
+      // 省略代码....
+    }
+    // 后面真正要执行的代码
+    const run = () => {
+      // 触发beforeRun钩子，执行绑定的回调
+      this.hooks.beforeRun.callAsync(this, err => {
+        // 如果报错直接退出当前编译，并且返回报错信息
+        if (err) return finalCallback(err);
+        // 在执行完成异步钩子beforeRun；后再执行run一步钩子
+        this.hooks.run.callAsync(this, err => {
+          if (err) return finalCallback(err);
+          // 执行readRecords方法，进行文件读取完成后执行this.compile方法
+          this.readRecords(err => {
+            if (err) return finalCallback(err);
+            // 执行this.compile方法并且传入当前onCompiled作为回调函数
+            this.compile(onCompiled);
+          });
+        });
+      });
+    };
+    // this.idle 默认为false
+    if (this.idle) {
+      // 这里的代码暂时不做解释
+      this.cache.endIdle(err => {
+        if (err) return finalCallback(err);
+        this.idle = false;
+        run();
+      });
+    } else {
+      // 执行啥名定义的run()方法
+      run();
+    }
+
+  }
+  // 后面定义的方法暂时不在此一一列出等用到了会标注清楚
+  // ...省略代码
+}
+```
