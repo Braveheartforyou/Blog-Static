@@ -1,5 +1,7 @@
 ## webpack编译流程
 
+说明一点看webpack的编译流程非常枯燥，即使看完理解之后也不见得能对本上有很多帮助。
+
 - Entry: 指定`webpack`开始构建的入口模块，从该模块开始构建并计算出直接或间接依赖的模块或者库。
 - Output：告诉`webpack`如何命名输出的文件以及输出的目录
 - Module: 模块，在 `Webpack` 里一切皆模块，一个模块对应着一个文件。Webpack 会从配置的 `Entry` 开始递归找出所有依赖的模块。
@@ -21,6 +23,18 @@ webpack源码内部主要的概念：
 - `compiler 对象`代表了完整的 `webpack 环境配置`。这个对象在启动 webpack 时被一次性建立，并配置好所有可操作的设置，包括 `options`，`loader` 和 `plugin`。当在 webpack 环境中应用一个插件时，插件将收到此 `compiler 对`象的引用。可以使用它来访问 webpack 的主环境。
 - `compilation` 对象代表了一次资源版本构建。**当运行 webpack 开发环境中间件时，每当检测到一个文件变化，就会创建一个新的 compilation，从而生成一组新的编译资源**。一个 compilation 对象表现了当前的模块资源、编译生成资源、变化的文件、以及被跟踪依赖的状态信息。compilation 对象也提供了很多关键时机的回调，以供插件做自定义处理时选择使用
 - `tapable`
+
+webpack入口中主要做的事情详情如下：
+
+| 事件名 | 解释 |
+|:------:|:------------------------:|
+| 初始化参数 | 从配置文件和 Shell 语句中读取与合并参数，得出最终的参数。 这个过程中还会执行配置文件中的插件实例化语句 new Plugin()。  |
+| 实例化 Compiler | 用上一步得到的参数初始化 `Compiler` 实例，`Compiler` 负责文件监听和启动编译。`Compiler` 实例中包含了完整的 `Webpack` 配置，全局只有一个 `Compiler` 实例。  |
+| 加载插件 | 依次调用插件的 `apply` 方法，让插件可以监听后续的所有事件节点。同时给插件传入 `compiler` 实例的引用，以方便插件通过 `compiler` 调用 `Webpack` 提供的 `API`。  |
+| environment | 开始应用 `Node.js` 风格的文件系统到 `compiler` 对象，以方便后续的文件寻找和读取。 |
+| entry-option | 读取配置的 `Entrys`，为每个 `Entry` 实例化一个对应的 `EntryPlugin`，为后面该 `Entry` 的递归解析工作做准备。 |
+| after-plugins | 调用完所有内置的和配置的插件的 `apply` 方法。 |
+| after-resolvers | 根据配置初始化完 `resolver`，`resolver` 负责在文件系统中寻找指定路径的文件。 |
 
 **调试技巧**
 
@@ -133,6 +147,11 @@ const createCompiler = rawOptions => {
 通过`applyWebpackOptionsDefaults(options);`再补全`options`上的默认配置。
 执行`compiler.hooks`上的钩子，执行绑定钩子的函数。
 
+**钩子调用顺序**
+
+- compiler.hooks.environment.call() 同步钩子
+- compiler.hooks.afterEnvironment.call() 同步钩子
+
 ### WebpackOptionsApply().process(options, compiler)
 
 `new WebpackOptionsApply().process(options, compiler);`看着代码只有一点点，但是里面添加了很多默认的`plugins`进去，也触发了`compiler.hooks`对应的钩子。`WebpackOptionsApply`的声明在`./lib/WebpackOptionsApply.js`文件中。
@@ -187,7 +206,7 @@ const createCompiler = rawOptions => {
       }
       // 。。。。。。省略很多代码
 
-      // 通过apply方法挂载插件，并且绑定很多对应的钩子
+      // 通过apply方法挂载插件，并且绑定很多对应的钩子，js加载方式插件
       new JavascriptModulesPlugin().apply(compiler);
       
       // 。。。。。。省略很多代码
@@ -228,6 +247,12 @@ const createCompiler = rawOptions => {
 在`WebpackOptionsApply().process(options, compiler)` 主要是为了根据不同的自定义配置和默认配置给`compiler`对象上挂载不同的插件；并且为`compiler.hooks`上的钩子绑定很多回调函数。
 
 `webpack`的插件的编写要提供一个`apply`方法，在初始化webpack插件时，会调用插件的`apply`方法，并且会传入`compiler`对象，方便在插件中做绑定`compiler.hooks`上的钩子函数和访问当前配置。
+
+**钩子调用顺序**
+
+- compiler.hooks.entryOption.call(options.context, options.entry) 同步钩子
+- compiler.hooks.afterPlugins.call(compiler); 同步钩子
+- compiler.hooks.initialize.call(); 同步钩子
 
 ### webpack 方法
 
@@ -281,13 +306,22 @@ compiler.run((err, stats)=>{
 
 ```js
 const Cache = require("./Cache"); // ./lib/Cache
+const {
+  SyncHook,
+  SyncBailHook,
+  AsyncParallelHook,
+  AsyncSeriesHook
+} = require("tapable"); // 引入tapbale库
 // ./lib/compiler
 class Compuler {
   constructor(context) {
     // 主要打变量赋值
     this.hooks = Object.freeze({
       // 定义各种的hooks
-      
+      /** @type {AsyncSeriesHook<[Compiler]>} */
+      beforeRun: new AsyncSeriesHook(["compiler"]),
+      /** @type {AsyncSeriesHook<[Compiler]>} */
+      run: new AsyncSeriesHook(["compiler"])
     })
     // 赋值其它变量
     /** @type {boolean} */
@@ -323,7 +357,7 @@ class Compuler {
         // 在执行完成异步钩子beforeRun；后再执行run一步钩子
         this.hooks.run.callAsync(this, err => {
           if (err) return finalCallback(err);
-          // 执行readRecords方法，进行文件读取完成后执行this.compile方法
+          // 执行readRecords方法
           this.readRecords(err => {
             if (err) return finalCallback(err);
             // 执行this.compile方法并且传入当前onCompiled作为回调函数
@@ -350,3 +384,146 @@ class Compuler {
   // ...省略代码
 }
 ```
+
+在`compiler`类中通过`tapable`库定义了很多`hooks`，webpack的**生命周期或执行流程**就是通过`hooks`串联起来的。`compiler.run()`方法内部又定义了三个函数`finalCallback`、`onCompiled`、`内部run(为了区别compiler.run)`。
+在下面会直接调用`内部run`方法，会执行`this.hooks.beforeRun.callAsync`代码，触发`this.hooks.beforeRun`异步钩子绑定的回调函数。那里绑定了`this.hooks.beforeRun`钩子呢？
+
+这里通过`watch`compiler对象内部的`hooks.beforeRun.taps`中储存了回调函数数组。如下图所示：
+![beforeRun_taps](./images/beforeRun_taps.jpg)
+
+`hooks.beforeRun`只绑定了一个回调函数，在`NodeEnvironmentPlugin(文件地址 ./lib/node/NodeEnvironmentPlugin.js)`插件中绑定的回调函数，回调函数会做一个文件系统的**清除缓存**操作，代码如下：
+
+```js
+  // 回调函数传入compiler对象作为参数
+  compiler.hooks.beforeRun.tap("NodeEnvironmentPlugin", compiler => {
+    // 判断当前inputFileSystem 和 当前类中的inputFileSystem相同
+    if (compiler.inputFileSystem === inputFileSystem) {
+      // 执行inputFileSystem中的清除操作
+      inputFileSystem.purge();
+    }
+  });
+```
+
+> 有两种方式可以查看`this.hooks.beforeRun`其中绑定那些回调函数，一种全局搜索`hooks.beforeRun`,另一种还是通过`vscode`调试代码时添加`watch`观测`compiler`对象。
+
+在触发完成`hooks.beforeRun`钩子后，接着触发`hooks.run`钩子，`hooks.run`没有绑定任何回调函数。`hooks.run`表示编译开始。
+
+第一次编译直接可以忽略`this.readRecords`方法，直接看`this.compile(onCompiled);`，`this.compile`是一个比较复杂的过程，再进行拆分。
+
+**钩子调用顺序**
+
+- compiler.hooks.beforeRun.callAsync(compiler.hooks.run()) 异步钩子
+- compiler.hooks.run.callAsync(this.complie(onCompiled)) 异步钩子
+
+## compiler.compile(this.compile)
+
+首先看一下`this.compile(compiler中定义)`方法的定义和传入的回调函数`onCompiled(compiler.run中定义的)`的定义，代码如下：
+
+```js
+  // ./lib/compiler
+
+  class Compiler {
+    // 省略代码...
+    constuctor () {}
+    // 省略代码...
+
+    // 定义NormalModuleFactory工厂函数
+    createNormalModuleFactory() {
+      const normalModuleFactory = new NormalModuleFactory({
+        context: this.options.context,
+        fs: this.inputFileSystem,
+        resolverFactory: this.resolverFactory,
+        options: this.options.module,
+        associatedObjectForCache: this.root,
+        layers: this.options.experiments.layers
+      });
+      // 触发normalModuleFactory钩子函数并且传入工厂函数
+      this.hooks.normalModuleFactory.call(normalModuleFactory);
+      // 返回工程函数
+      return normalModuleFactory;
+    }
+    // 定义ContextModuleFactory工厂函数
+    createContextModuleFactory() {
+      const contextModuleFactory = new ContextModuleFactory(this.resolverFactory);
+      // 触发contextModuleFactory钩子函数并且传入工厂函数
+      this.hooks.contextModuleFactory.call(contextModuleFactory);
+      // 返回工程函数
+      return contextModuleFactory;
+    }
+
+    // 创建Compliation所要用到的参数
+    newCompilationParams() {
+      const params = {
+        // 触发对应的钩子并且返回工厂函数实例
+        normalModuleFactory: this.createNormalModuleFactory(),
+        contextModuleFactory: this.createContextModuleFactory()
+      };
+      return params;
+    }
+
+    // 通过new Compilation(compiler)实例化Compilation并且返回
+    createCompilation() {
+      return new Compilation(this);
+    }
+
+    // 创建compilation实例
+    newCompilation(params) {
+      // 创建Compilation函数
+      const compilation = this.createCompilation();
+      compilation.name = this.name;
+      compilation.records = this.records;
+      //  触发thisCompilation钩子，传入 compilation实例 和 { NormalModuleFactory, ContextModuleFactory}
+      this.hooks.thisCompilation.call(compilation, params);
+      //  触发thisCompilation钩子 传入 compilation实例 和 { NormalModuleFactory, ContextModuleFactory}
+      this.hooks.compilation.call(compilation, params);
+      // 返回compilation实例
+      return compilation;
+    }
+
+
+    // 创建compile方法并且传入callback; 在compiler.run()中通过this.compile(onCompiled)调用
+    compile (callback) {
+      // 通过newCompilationParams()获取两个工厂函数
+      // createNormalModuleFactory 用于创建NormalModuleFactory
+      // createContextModuleFactory 用于创建ContextModuleFactory
+      const params = this.newCompilationParams();
+      // 触发beforeCompile钩子；并且传入当前传入compilation的参数
+      this.hooks.beforeCompile.callAsync(params, err => {
+        // 触发beforeCompile钩子；并且传入当前传入compilation的参数
+        this.hooks.compile.call(params);
+        // 获取compiation实例
+        const compilation = this.newCompilation(params);
+        // 触发make钩子执行绑定的回调函数，传入compilation实例 回调函数
+        this.hooks.make.callAsync(compilation, err => {
+          // 触发finishMake函数钩子执行绑定的回调函，传入compilation实例 回调函数
+          this.hooks.finishMake.callAsync(compilation, err => {
+            process.nextTick(() => {
+              // 执行 compilation 实例上的finish方法
+              compilation.finish(err => {
+                 // 执行 compilation 实例上的seal方法
+                compilation.seal(err => {
+                  // 触发afterCompile函数钩子执行绑定的回调函，传入compilation实例 回调函数
+                  this.hooks.afterCompile.callAsync(compilation, err => {
+                    // 执行传入的onCompiled回调函数，并且传入compilation实例，返回执行结果
+                    return callback(null, compilation);
+                  });
+                });
+              });
+            });
+          });
+        });
+      });
+    }
+  }
+```
+
+这一步骤里面的代码太多了，很多代码后面又会触发其他的钩子，所以这里再把当前的代码分为
+
+
+**钩子调用顺序**
+
+- compiler.hooks.beforeCompile.callAsync(params: {normalModuleFactory, contextModuleFactory }) 异步钩子 // 创建Module的工厂函数
+- compiler.hooks.run.callAsync(this.complie(onCompiled)) 异步钩子
+
+
+
