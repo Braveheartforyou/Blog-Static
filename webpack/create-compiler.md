@@ -517,7 +517,23 @@ class Compuler {
   }
 ```
 
-这一步骤里面的代码太多了，很多代码后面又会触发其他的钩子，所以这里再把当前的代码分为
+这一步骤里面的代码太多了，很多代码后面又会触发其他的钩子，尽可能细的去看它们背后执行了什么。`compile`方法中就是真正的开始编译流程，下面就开始看一下`webpack`是怎么实现的。下面代码都是从上面代码分解出来了，一步一步来了解是怎么实现的。
+
+```js
+   compile (callback) {
+    // 通过newCompilationParams()获取两个工厂函数
+    // createNormalModuleFactory 用于创建NormalModuleFactory
+    // createContextModuleFactory 用于创建ContextModuleFactory
+     const params = this.newCompilationParams();
+     
+   }
+```
+
+在`compile`方法中首先会实例化两个有关于`Module`的两个工厂函数，这个两个工厂还是也是非常重要的是后续用来解析`module`的`normalModule`和`contextModule`。如果对这个感兴趣的话可以去看[NormalModuleFactory.md](./NormalModuleFactory.md)
+
+
+
+
 
 
 **钩子调用顺序**

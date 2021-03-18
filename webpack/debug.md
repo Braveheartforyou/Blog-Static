@@ -33,7 +33,7 @@
 
 `clone`源码后要创建一个新的文件夹`debug`，防止对源码侵入。
 
-#### debug文件夹
+### debug文件夹
 
 在根目录下创建一个名为`debug`的文件夹, ddebug 文件夹下面文件目录如下：
 
@@ -146,3 +146,7 @@ complier.run((err, stats) => {
 
 所有的文件创建完成了，就可以打断点进行调试了，主要的调试入口实在`webpack/lib/webpack.js`文件夹中进行创建`complier`对象。
 
+### 最后
+
+无论是在vscode上调试还是在浏览器中调试node服务，一定要在watch模块添加三个对象`compiler`、`compilation`、`options`不然你根本找不到通过`触发钩子的回调函数`，你观察了`compiler`对象就可以很清晰看到它的`compiler.hooks.xxxx.taps等等`上面绑定的回调函数，至今搜索注册对应的回调函数就可以精准的查找到了。如图所示：
+![beforeRun_taps](./images/beforeRun_taps.jpg)
