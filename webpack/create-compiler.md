@@ -529,17 +529,46 @@ class Compuler {
    }
 ```
 
-在`compile`方法中首先会实例化两个有关于`Module`的两个工厂函数，这个两个工厂还是也是非常重要的是后续用来解析`module`的`normalModule`和`contextModule`。如果对这个感兴趣的话可以去看[NormalModuleFactory.md](./NormalModuleFactory.md)
+在`compile`方法中首先会实例化两个有关于`Module`的两个工厂函数，这个两个工厂还是也是非常重要的是后续用来解析`module`的`normalModule`和`contextModule`。如果对这个感兴趣的话可以去看[NormalModuleFactory.md](./NormalModuleFactory.md)。
 
+以`NormalModuleFactory`工厂函数为例，它主要实现的功能是：
 
+- 通过`loader`的`resolver`来解析`loader`路径
+- 使用`Factory`创建 `NormalModule`实例
+- 使用`loaderResolver`解析`loader`模块路径
+- 根据`rule.modules`创建`RulesSet`规则集
+- 使用 `loader-runner` 运行 `loaders`
+- 通过 `Parser` 解析 (内部是 `acron`)
+- `ParserPlugins` 添加依赖
 
+在`compiler.compile`方法中首先初始化了两个工厂函数`(normalModuleFactory、contextModuleFactory)`，并且把两个工厂函数实例储存到`params`变量中。`this.hooks.beforeCompile`触发编译前`beforeCompile`钩子，钩子函数上没有绑定任何函数；`this.hooks.compile`编译即将启动钩子，也没有绑定任何回调函数；
+通过`this.newCompilation`初始化一个`Compilation`实例，接下来触发`thisCompilation.call`钩子，这个钩子上面绑定了`9个`回调函数，如下图所示：
 
+![thisCompliation_callback](./images/thisCompliation_callback.png)
 
+执行`compilation.call`同步钩子，当前钩子上绑定了`46个`回调函数，如下图所示：
+
+![compliation_callback](./images/compliation_callback.png)
+
+> `compilation实例` 对象代表了一次资源版本构建。当运行 webpack 开发环境中间件时，每当检测到一个文件变化，就会创建一个新的 `compilation`，从而生成一组新的编译资源。一个 `compilation 对象`表现了当前的模块资源、编译生成资源、变化的文件、以及被跟踪依赖的状态信息。
+
+**compilation**中主要功能：
+
+<!-- TODO: 总结compliation -->
+
+在返回`compilation`实例对象后，执行`compiler.hooks.make.callAsync`钩子开始真正的编译过程，`compilation.addEntry`从入口文件开始编译。
+
+因为`make`是一个入口文件内容也比较多，再把这个过程看做一个独立的模块。
 
 **钩子调用顺序**
 
-- compiler.hooks.beforeCompile.callAsync(params: {normalModuleFactory, contextModuleFactory }) 异步钩子 // 创建Module的工厂函数
-- compiler.hooks.run.callAsync(this.complie(onCompiled)) 异步钩子
+- compiler.hooks.beforeCompile.callAsync(params: {normalModuleFactory, contextModuleFactory }) 异步钩子
+- compiler.hooks.normalModuleFactory.call(normalModuleFactory)/compiler.hooks.contextModuleFactory.call(contextModuleFactory) 同步钩子
+- compiler.hooks.compile.call(params: {normalModuleFactory, contextModuleFactory }) 同步钩子
+- compiler.hooks.thisCompilation.call(compilation // 实例, params: {normalModuleFactory, contextModuleFactory }) 同步钩子
+- compiler.hooks.compilation.call(compilation // 实例, params: {normalModuleFactory, contextModuleFactory }) 同步钩子
 
 
+### make.callAsync(compilation)
 
+接下来执行编译钩子`hooks.make.callAsync(compilation)`，
