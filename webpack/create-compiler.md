@@ -568,7 +568,10 @@ class Compuler {
 - compiler.hooks.thisCompilation.call(compilation // 实例, params: {normalModuleFactory, contextModuleFactory }) 同步钩子
 - compiler.hooks.compilation.call(compilation // 实例, params: {normalModuleFactory, contextModuleFactory }) 同步钩子
 
-
 ### make.callAsync(compilation)
 
-接下来执行编译钩子`hooks.make.callAsync(compilation)`，
+> addEntry 中无论是那个版本的webpack 都是回调地狱，并且很多钩子在nextTick中执行，很难找，希望在norModuleFactory中能梳理清楚，数不清楚的回调函数。再加上异步和tapable，导致调用栈都不能很好的梳理清楚。
+
+大致执行流程是`compilation.addEntry => compilation._addEntryItem => compilation.addModuleTree => compilation.handleModuleCreation => compilation.factorizeModule => compilation._factorizeModule => NormalModuleFactory.create => compliation.addModule => compilation.buildModule => compilation._buildModule => normalModule.build`
+
+接下来执行编译钩子`hooks.make.callAsync(compilation)`，会执行到``
