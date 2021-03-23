@@ -568,10 +568,47 @@ class Compuler {
 - compiler.hooks.thisCompilation.call(compilation // 实例, params: {normalModuleFactory, contextModuleFactory }) 同步钩子
 - compiler.hooks.compilation.call(compilation // 实例, params: {normalModuleFactory, contextModuleFactory }) 同步钩子
 
-### make.callAsync(compilation)
+### compiler.hooks.make.callAsync(compilation)
 
 > addEntry 中无论是那个版本的webpack 都是回调地狱，并且很多钩子在nextTick中执行，很难找，希望在norModuleFactory中能梳理清楚，数不清楚的回调函数。再加上异步和tapable，导致调用栈都不能很好的梳理清楚。
 
-大致执行流程是`compilation.addEntry => compilation._addEntryItem => compilation.addModuleTree => compilation.handleModuleCreation => compilation.factorizeModule => compilation._factorizeModule => NormalModuleFactory.create => compliation.addModule => compilation.buildModule => compilation._buildModule => normalModule.build`
+大致执行流程是`compilation.addEntry => compilation._addEntryItem => compilation.addModuleTree => compilation.handleModuleCreation => compilation.factorizeModule => compilation._factorizeModule => NormalModuleFactory.create => compliation.addModule => compilation.buildModule => compilation._buildModule => normalModule.build => normalModule.doBuild => runLoaders(normalModule中的执行) => this.parser.parse(normalModule中的执行)`
 
-接下来执行编译钩子`hooks.make.callAsync(compilation)`，会执行到``
+vscode调试调用栈部分如下图所示：
+
+![make_callStack_one.png](./images/make_callStack_one.png)
+
+
+执行`compiler.hooks.make.callAsync(compilation)`触发`make钩子`，有很多个插件绑定了`compiler.hooks.make`钩子，绑定钩子的插件如下图所示：
+
+![make_tapAsync](./images/make_tapAsync.png)
+
+这里只关注了`entryPulgin`内部绑定的回调函数，在回调函数中执行`compilation.addEntry(context, dep, options, err=> {})`；
+
+在`compilation.addEntry`会直接调用`compilation._addEntryItem`内部执行操作如下：
+
+- 执行`this.entries.set(name, entryData);`添加入口文件配置
+- 执行`compilation.hooks.addEntry.call(entry, options);`执行addEntry钩子，绑定钩子的插件有`ProgressPlugin`、`RuntimeChunkPlugin`，执行对应的回调函数
+- 调用`compilation.addModuleTree(context, dependency: entry, contextInfo: undefined)`
+
+在 `compilation.addModuleTree`中执行大致如下：
+
+- `const moduleFactory = this.dependencyFactories.get(Dep);` 获取工厂函数；
+- 调用`compilation.handleModuleCreation(factory: moduleFactory // 工厂函数, dependencies: [dependency])`
+
+`compilation.handleModuleCreation`方法执行如下操作：
+
+- 调用`compliation.factorizeModule(factory// 工厂函数, dependencies // 依赖项, (err, newModule) => { this.addModule; })`方法
+- 回调函数中有调用了`compliation.addModule`方法；`compliation.addModule`的回调函数中又调用了`compliation.buildModule`方法
+
+`compliation.factorizeModule`方法执行如下操作：
+
+`this.factorizeQueue.add(options, callback);`，调用一开始初始化`compilation`时，初始化的`this.factorizeQueue = new AsyncQueue({ name: "factorize", parent: this.addModuleQueue, processor: this._factorizeModule.bind(this) });`
+
+- `compilation.factorizeQueue.add()`主要的操作是`setImmediate(root._ensureProcessing);` 在下一个进程中添加一个`AsyncQueue._ensureProcessing`方法。
+
+在下一个nextTick中，执行链大致如下`AsyncQueue._ensureProcessing => AsyncQueue._startProcessing => compilation._factorizeModule`。
+
+下面看`compilation._factorizeModule`方法过程大致如下：
+
+- `factory.create`
