@@ -529,7 +529,7 @@ class Compuler {
    }
 ```
 
-在`compile`方法中首先会实例化两个有关于`Module`的两个工厂函数，这个两个工厂还是也是非常重要的是后续用来解析`module`的`normalModule`和`contextModule`。如果对这个感兴趣的话可以去看[NormalModuleFactory.md](./NormalModuleFactory.md)。
+在`compile`方法中首先会实例化两个有关于`Module`的两个工厂函数，这个两个工厂还是也是非常重要的是后续用来解析`module`的`normalModule`和`contextModule`。如果对这个感兴趣的话可以去看[NormalModuleFactory过程](./NormalModuleFactory.md)。
 
 以`NormalModuleFactory`工厂函数为例，它主要实现的功能是：
 
@@ -572,7 +572,7 @@ class Compuler {
 
 > addEntry 中无论是那个版本的webpack 都是回调地狱，并且很多钩子在nextTick中执行，很难找，希望在norModuleFactory中能梳理清楚，数不清楚的回调函数。再加上异步和tapable，导致调用栈都不能很好的梳理清楚。
 
-大致执行流程是`compilation.addEntry => compilation._addEntryItem => compilation.addModuleTree => compilation.handleModuleCreation => compilation.factorizeModule => compilation._factorizeModule => NormalModuleFactory.create => compliation.addModule => compilation.buildModule => compilation._buildModule => normalModule.build => normalModule.doBuild => runLoaders(normalModule中的执行) => this.parser.parse(normalModule中的执行)`
+大致执行流程是`compilation.addEntry => compilation._addEntryItem => compilation.addModuleTree => compilation.handleModuleCreation => compilation.factorizeModule => compilation._factorizeModule => NormalModuleFactory.create => compliation.addModule => compliation._addModule => compilation.buildModule => compilation._buildModule => normalModule.build => normalModule.doBuild => runLoaders(normalModule中的执行) => this.parser.parse(normalModule中的执行)`
 
 vscode调试调用栈部分如下图所示：
 
@@ -618,4 +618,8 @@ vscode调试调用栈部分如下图所示：
 - 创建`resolveData`对象用于储存一些信息
 - 触发`NormalModuleFactory.hooks.beforeResolve.callAsync(resolveData, callback)`钩子，没有绑定任何回调函数，直接执行传入的`callback`函数。
 - 触发`NormalModuleFactory.hooks.factorize.callAsync(resolveData, callback)`，在实例化`NormalModuleFactoryPlugin`时，已经绑定过`NormalModuleFactory.hooks.factorize.tapAsync({ name: "NormalModuleFactory", stage: 100 }, callback)`; `callback`回调函数中直接执行了`NormalModuleFactory.hooks.resolve.callAsync(resolveData, callback)`
-- 触发`NormalModuleFactory.hooks.resolve.callAsync(resolveData, callback)`钩子函数
+- 触发`NormalModuleFactory.hooks.resolve.callAsync(resolveData, callback)`钩子函数执行`loaderResolver`解析`loader`绝对路径；`normalResolver`解析`文件`和`module` 的绝对路径;
+- 执行`this.resolverFactory.get` 这里不展开看了，如果感兴趣可以去看[NormalModuleFactory过程](./NormalModuleFactory.md)。
+- 执行`this.ruleSet.exec`使用RuleSet对象来匹配模块所需的`loader`。
+
+执行`compliation.addModule`添加m
