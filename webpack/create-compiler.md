@@ -611,4 +611,11 @@ vscode调试调用栈部分如下图所示：
 
 下面看`compilation._factorizeModule`方法过程大致如下：
 
-- `factory.create`
+- `factory.create`会调用在`compiler`中创建`normalModuleFactory`或者`contextModuleFactory`，会调用`NormalModuleFactory.create`方法。
+
+`NormalModuleFactory.create`方法执行过程大致如下：
+
+- 创建`resolveData`对象用于储存一些信息
+- 触发`NormalModuleFactory.hooks.beforeResolve.callAsync(resolveData, callback)`钩子，没有绑定任何回调函数，直接执行传入的`callback`函数。
+- 触发`NormalModuleFactory.hooks.factorize.callAsync(resolveData, callback)`，在实例化`NormalModuleFactoryPlugin`时，已经绑定过`NormalModuleFactory.hooks.factorize.tapAsync({ name: "NormalModuleFactory", stage: 100 }, callback)`; `callback`回调函数中直接执行了`NormalModuleFactory.hooks.resolve.callAsync(resolveData, callback)`
+- 触发`NormalModuleFactory.hooks.resolve.callAsync(resolveData, callback)`钩子函数
