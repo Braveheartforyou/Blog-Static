@@ -567,23 +567,80 @@ class Compuler {
 - compiler.hooks.compile.call(params: {normalModuleFactory, contextModuleFactory }) 同步钩子
 - compiler.hooks.thisCompilation.call(compilation // 实例, params: {normalModuleFactory, contextModuleFactory }) 同步钩子
 - compiler.hooks.compilation.call(compilation // 实例, params: {normalModuleFactory, contextModuleFactory }) 同步钩子
+- compiler.hooks.make.callAsync(compilation // 实例, callback) 异步钩子
 
 ### compiler.hooks.make.callAsync(compilation)
 
 > addEntry 中无论是那个版本的webpack 都是回调地狱，并且很多钩子在nextTick中执行，很难找，希望在norModuleFactory中能梳理清楚，数不清楚的回调函数。再加上异步和tapable，导致调用栈都不能很好的梳理清楚。
 
-大致执行流程是`compilation.addEntry => compilation._addEntryItem => compilation.addModuleTree => compilation.handleModuleCreation => compilation.factorizeModule => compilation._factorizeModule => NormalModuleFactory.create => compliation.addModule => compliation._addModule => compilation.buildModule => compilation._buildModule => normalModule.build => normalModule.doBuild => runLoaders(normalModule中的执行) => this.parser.parse(normalModule中的执行)`
+大致执行流程是`compilation.addEntry => compilation._addEntryItem => compilation.addModuleTree => compilation.handleModuleCreation => compilation.factorizeModule => compilation._factorizeModule => NormalModuleFactory.create => compilation.addModule => compilation._addModule => compilation.buildModule => compilation._buildModule => normalModule.build => normalModule.doBuild => runLoaders(normalModule中的执行) => this.parser.parse(normalModule中的执行)`
 
 vscode调试调用栈部分如下图所示：
 
 ![make_callStack_one.png](./images/make_callStack_one.png)
-
 
 执行`compiler.hooks.make.callAsync(compilation)`触发`make钩子`，有很多个插件绑定了`compiler.hooks.make`钩子，绑定钩子的插件如下图所示：
 
 ![make_tapAsync](./images/make_tapAsync.png)
 
 这里只关注了`entryPulgin`内部绑定的回调函数，在回调函数中执行`compilation.addEntry(context, dep, options, err=> {})`；
+
+```js
+  class Compilation {
+    addEntry(context, entry, optionsOrName, callback) {
+      // 执行添加入口文件
+      this._addEntryItem(context, entry, "dependencies", options, callback);
+    }
+    _addEntryItem(context, entry, target, options, callback) {
+      // 入口数据添加进entries中
+      this.entries.set(name, entryData);
+      // 触发addEntry钩子
+      this.hooks.addEntry.call(entry, options);
+      // addModuleTree添加module树
+      this.addModuleTree({})
+    }
+    addModuleTree({ context, dependency, contextInfo }, callback) {
+      this.handleModuleCreation({ factory: moduleFactory, dependencies: [dependency], originModule: null, contextInfo, context }, callback)
+    }
+    _factorizeModule({ currentProfile, factory, dependencies, originModule, contextInfo, context }, callback) {
+      // 执行NormalModuleFactory实例上的create方法
+      factory.create()
+    }
+    factorizeModule(options, callback) {
+      this.factorizeQueue.add(options, callback);
+    }
+    addModule(module, callback) {
+      this.addModuleQueue.add(module, callback);
+    }
+    _addModule(module, callback) {
+      // 添加创建到的module到modules
+      this._modules.set(identifier, module);
+      this.modules.add(module);
+    }
+
+    handleModuleCreation({factory, dependencies, originModule, contextInfo, context, recursive = true }, callback) {
+      // 执行this.factorizeModule函数
+      this.factorizeModule({ currentProfile, factory, dependencies, originModule, contextInfo, context }, (err, newModule) => {
+        // 在执行this.factorizeModule之后会执行this._factorizeModule => 再调用factory.create()
+        // 在执行完成module的解析后才会执行this.addModule
+        this.addModule(newModule, (err, module) => {
+          // 先执行this._addModule
+          // 再执行buildModule 对新创建的module进行AST转化和loader解析
+          this.buildModule(module, err => {
+            // 执行this._buildModule 收集buildModules
+            // 对buildModule.module上的依赖递归收集依赖
+            this.processModuleDependencies(module, err => {
+              if (err) {
+                return callback(err);
+              }
+              callback(null, module);
+            });
+          })
+        })
+      })
+    })
+  }
+```
 
 在`compilation.addEntry`会直接调用`compilation._addEntryItem`内部执行操作如下：
 
@@ -598,10 +655,10 @@ vscode调试调用栈部分如下图所示：
 
 `compilation.handleModuleCreation`方法执行如下操作：
 
-- 调用`compliation.factorizeModule(factory// 工厂函数, dependencies // 依赖项, (err, newModule) => { this.addModule; })`方法
-- 回调函数中有调用了`compliation.addModule`方法；`compliation.addModule`的回调函数中又调用了`compliation.buildModule`方法
+- 调用`compilation.factorizeModule(factory// 工厂函数, dependencies // 依赖项, (err, newModule) => { this.addModule; })`方法
+- 回调函数中有调用了`compilation.addModule`方法；`compilation.addModule`的回调函数中又调用了`compilation.buildModule`方法
 
-`compliation.factorizeModule`方法执行如下操作：
+`compilation.factorizeModule`方法执行如下操作：
 
 `this.factorizeQueue.add(options, callback);`，调用一开始初始化`compilation`时，初始化的`this.factorizeQueue = new AsyncQueue({ name: "factorize", parent: this.addModuleQueue, processor: this._factorizeModule.bind(this) });`
 
@@ -619,7 +676,173 @@ vscode调试调用栈部分如下图所示：
 - 触发`NormalModuleFactory.hooks.beforeResolve.callAsync(resolveData, callback)`钩子，没有绑定任何回调函数，直接执行传入的`callback`函数。
 - 触发`NormalModuleFactory.hooks.factorize.callAsync(resolveData, callback)`，在实例化`NormalModuleFactoryPlugin`时，已经绑定过`NormalModuleFactory.hooks.factorize.tapAsync({ name: "NormalModuleFactory", stage: 100 }, callback)`; `callback`回调函数中直接执行了`NormalModuleFactory.hooks.resolve.callAsync(resolveData, callback)`
 - 触发`NormalModuleFactory.hooks.resolve.callAsync(resolveData, callback)`钩子函数执行`loaderResolver`解析`loader`绝对路径；`normalResolver`解析`文件`和`module` 的绝对路径;
-- 执行`this.resolverFactory.get` 这里不展开看了，如果感兴趣可以去看[NormalModuleFactory过程](./NormalModuleFactory.md)。
-- 执行`this.ruleSet.exec`使用RuleSet对象来匹配模块所需的`loader`。
+- 执行`NormalModuleFactory.resolverFactory.get` 这里不展开看了，如果感兴趣可以去看[NormalModuleFactory过程](./NormalModuleFactory.md)。
+- 执行`NormalModuleFactory.ruleSet.exec`使用RuleSet对象来匹配模块所需的`loader`。
+- 执行`NormalModuleFactory.hooks.resolve.tapAsync`回调函数中会在`data.createData`添加`parser: this.getParser(type, settings.parser); generator: this.getGenerator(type, settings.generator)` 用于后面转换`AST`树和生成代码
+- 执行`NormalModuleFactory.hooks.afterResolve`钩子
+- 执行`NormalModuleFactory.hooks.createModule`和`NormalModuleFactory.hooks.module`钩子
 
-执行`compliation.addModule`添加m
+执行`compilation.addModule => compilation._addModule`添加module模块，执行大致如下：
+
+- 执行`compilation._modules.set(identifier, module);` 和 `compilation.modules.add(module);`添加模块
+
+执行`compilation.buildModule => compilation._buildModule`开始编译模块，`_buildModule`中会执行如下操作：
+
+- 执行`module.needBuild(NormalModule.needBuild)`会执行到`NormalModule`中的`needBuild`方法；在回调函数中执行`module.build(NormalModule.build)`
+- 触发`compilation.hooks.buildModule.call(module)`钩子，在`SourceMapDevToolModuleOptionsPlugin`插件中执行`buildModule`回调函数。[sourceMap 相关](./sourceMap.md)有兴趣了解`sourceMap`的可以看一下。
+- 执行`compilation.builtModules.add(module)`
+
+在`NormalModule.js`文件下执行`module.build(NormalModule.build)`，大致执行过程如下：
+
+- 执行`NormalModule.doBuild`函数，创建`loaderContext`和`_source`对象；
+- 创建并触发`NormalModule.hooks.beforeLoaders.call`钩子
+- 通过`runLoaders`运行相关的loader
+- 执行`this.parser.parse`源码进行`AST`的转换
+
+执行完成`module.build(NormalModule.build)`接着会执行到`compilation.processModuleDependencies(module, callback)`，对`module`递归进行依赖收集，执行过程如下：
+
+- 执行`compilation.processModuleDependencies(module, callback)`并且传入`buildModule`生成的`module`实例；
+- 执行`compilation._processModuleDependencies(module, callback)`，通过`processDependenciesBlock`进行递归收集依赖；
+- 循环执行`compilation.handleModuleCreation`再进行模块转换、依赖收集
+
+在对所有`module`处理完成之后执行`compiler.compiler`中的`hooks.finishMake`钩子，代码如下:
+
+```js
+  class Compiler {
+    compile (callback) {
+      // 执行make钩子 递归处理module
+      this.hooks.make.callAsync(compilation, err => {
+        // 执行finishMake钩子
+        this.hooks.finishMake.callAsync(compilation, err => {
+          process.nextTick(() => {
+            // 执行compilation的finsh方法 对modules上的错误或者警告处理
+            // finsh中会执行compilation.hooks.finishModules钩子
+            compilation.finish(err => {
+              // 执行seal 对module代码进行封装输出
+              compilation.seal(err => {
+                // 触发compiler.hooks.afterCompile钩子
+                this.hooks.afterCompile.callAsync(compilation, err => {
+                  // 执行传入的callback方法
+                  return callback(null, compilation);
+                })
+              })
+            })
+          })
+        })
+      })
+    }
+  }
+```
+
+在`make`钩子函数完成之后，会执行当前`compilation`上的`finsh`方法，对生成的`modules`时产生的错误或者警告进行处理；触发`compilation.hooks.finshModules`钩子。
+下面进入另一个重要的过程**封装**、**输出**阶段，在这个阶段就是对上一个阶段处理完成的`modules`进行封装输出；这个阶段的入口是`compilation.seal`，会生成`chunk`和`assets`等信息，根据不同的`template`生成要输出的代码。
+
+**钩子调用顺序**
+
+- compiler.hooks.make.callAsync(compilation // 实例, callback) 异步钩子
+- compiler.hooks.finishMake.callAsync(compilation // 实例, callback)  异步钩子
+- compiler.hooks.afterCompile.callAsync(compilation // 实例, callback)  异步钩子
+
+## compilation.seal(callback)
+
+`compilation.seal`是封装、输出流程的入口，看一下webpack中是如何对上一步`compilation.modules`生成`chunkGroup`和文件。
+
+几个概念比较重要如下：
+
+- `module`: 就是不同的资源文件，包含了你的代码中提供的例如：`js/css/图片` 等文件，在编译环节，`webpack`会根据不同 `module` 之间的依赖关系去组合生成 `chunk`.
+- `moduleGraph`: 用于存储各个`module`之间的关系，对于后面生成`chunkGraph`也要用到。
+- `entryPoint/chunkGroup`: 由一个或者多个`chunk`组成，在生成`chunkGraph`时候要用到。
+- `chunkGraph`: 用于储存`module`、`chunk`、`chunkGroup` 三者之间的关系
+- `chunk`: 由一个或者多个`module`组成，它是 webpack 编译打包后输出的最终文件；
+
+```js
+  class Compilation {
+    seal (callback) {
+      // 实例ChunkGraph类
+      const chunkGraph = new ChunkGraph(this.moduleGraph);
+      // 触发compilation.hooks.seal钩子
+      this.hooks.seal.call();
+      // 优化compilation.modules中的dependencies
+      while (this.hooks.optimizeDependencies.call(this.modules)) {
+        /* empty */
+      }
+      // 触发compilation.hooks.afterOptimizeDependencies钩子
+      this.hooks.afterOptimizeDependencies.call(this.modules);
+      // 触发compilation.hooks.beforeChunks钩子
+      this.hooks.beforeChunks.call();
+      // 循环this.entries 入口文件创建chunks
+      for (const [name, { dependencies, includeDependencies, options }] of this.entries) {
+        // 通过addChunk在compilation.chunks添加一个新创建的chunk
+        const chunk = this.addChunk(name);
+        // 创建entryPoint实例
+        const entrypoint = new Entrypoint(options);
+        // chunk 添加到entrypoint内部的属性上
+        entrypoint.setEntrypointChunk(chunk);
+        // 保存entrypoint到compilation对象的属性上
+        this.namedChunkGroups.set(name, entrypoint);
+        this.entrypoints.set(name, entrypoint);
+        this.chunkGroups.push(entrypoint);
+        
+        // 用于建立chunkGraph和chunk之间的联系
+        onnectChunkGroupAndChunk(entrypoint, chunk);
+
+        // 循环依赖项 吧对应的module添加到chunkGraphInit 或者modulesList 中
+        for (const dep of [...this.globalEntry.dependencies, ...dependencies]) {
+          const module = this.moduleGraph.getModule(dep);
+          if (module) {
+            // 用于建立chunk和entryModule之间的联系
+            chunkGraph.connectChunkAndEntryModule(chunk, module, entrypoint);
+            this.assignDepth(module);
+            const modulesList = chunkGraphInit.get(entrypoint);
+            if (modulesList === undefined) {
+              chunkGraphInit.set(entrypoint, [module]);
+            } else {
+              modulesList.push(module);
+            }
+          }
+        }
+      }
+      //* 用于创建chunkGraph
+      buildChunkGraph(this, chunkGraphInit);
+
+      this.hooks.optimize.call();
+
+      // 执行各种优化modules钩子
+      while (this.hooks.optimizeModules.call(this.modules)) {
+        /* empty */
+      }
+      // 执行各种优化chunks钩子
+      while (this.hooks.optimizeChunks.call(this.chunks, this.chunkGroups)) {
+        // 触发几个比较重要的钩子
+        // 触发 统计chunks数量插件 LimitChunkCountPlugin
+        compilation.hooks.optimizeChunks.tap( {name: "LimitChunkCountPlugin", stage: STAGE_ADVANCED }, chunks => {})
+        // 触发 移除空chunks插件 RemoveEmptyChunksPlugin
+        compilation.hooks.optimizeChunks.tap( { name: "RemoveEmptyChunksPlugin", stage: STAGE_BASIC }, handler );
+        // 触发压缩chunks  MinChunkSizePlugin插件
+        compilation.hooks.optimizeChunks.tap( { name: "MinChunkSizePlugin", stage: STAGE_ADVANCED }, chunks => {})
+        // 触发根据split 切割chunks插件
+        compilation.hooks.optimizeChunks.tap( { name: "SplitChunksPlugin", stage: STAGE_ADVANCED }, chunks => {})
+        /* empty */
+      }
+      // 省略代码
+
+      // 优化modules树状结构
+      this.hooks.optimizeTree.callAsync(this.chunks, this.modules, err => {
+        this.hooks.optimizeChunkModules.callAsync(this.chunks, this.modules, err => {
+          // 各种优化钩子
+
+          // 生成module的hash 分为 hash、contentHash、chunkHash
+          this.createModuleHashes();
+          // 调用codeGeneration方法用于生成编译好的代码
+          this.codeGeneration(err => {
+            // 生成chunk的Hash
+            const codeGenerationJobs = this.createHash();
+            this._runCodeGenerationJobs(codeGenerationJobs, err => {
+              
+            })
+          })
+        })
+      })
+    }
+  }
+```
