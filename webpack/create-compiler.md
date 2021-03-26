@@ -60,7 +60,7 @@ webpack源码代码的起点是在`../lib/index.js`文件中，导出的webpack�
 根据上面列表的大致执行顺序结合代码分析。
 
 ```js
-  // lib/webpack.js
+  // ./lib/webpack.js
   // callback传入为空
   const webpack = ((options, callback) => {
     const create = () => {
@@ -94,6 +94,7 @@ webpack源码代码的起点是在`../lib/index.js`文件中，导出的webpack�
 代码如下：
 
 ```js
+// ./lib/webpack.js
 const createCompiler = rawOptions => {
   // 初始化基础配置，如output、devserver、plugin 给赋值一些默认的配置格式，防止后面使用时报错
   const options = getNormalizedWebpackOptions(rawOptions);
@@ -161,6 +162,7 @@ const createCompiler = rawOptions => {
 `./lib/WebpackOptionsApply.js`中的有很多代码，这里只看主要的流程如下：
 
 ```js
+  // ./lib/WebpackOptionsApply.js
   class WebpackOptionsApply extends OptionsApply {
     constructor() {
       super();
@@ -259,6 +261,7 @@ const createCompiler = rawOptions => {
 在执行完成`createCompiler`方法后，返回`create`方法创建的`compiler`对象，代码如下：
 
 ```js
+  // ./lib/webpack.js
   // callback传入为undefined
   const webpack = ((options, callback) => {
     // 上面详细看过的函数，这里不多做解释
@@ -290,6 +293,7 @@ const createCompiler = rawOptions => {
 下面开始进入编译流程，执行`debug/start.js`中的流程`compiler.run`，代码如下：
 
 ```js
+// debug/start.js
 // 进入compiler.run流程，并且传入回调函数，收集编译信息和报错信息
 compiler.run((err, stats)=>{
   if(err){
@@ -305,6 +309,7 @@ compiler.run((err, stats)=>{
 **./lib/compiler**
 
 ```js
+// ./lib/compiler
 const Cache = require("./Cache"); // ./lib/Cache
 const {
   SyncHook,
@@ -420,7 +425,7 @@ class Compuler {
 首先看一下`this.compile(compiler中定义)`方法的定义和传入的回调函数`onCompiled(compiler.run中定义的)`的定义，代码如下：
 
 ```js
-  // ./lib/compiler
+  // ./lib/compiler.js
 
   class Compiler {
     // 省略代码...
@@ -520,6 +525,7 @@ class Compuler {
 这一步骤里面的代码太多了，很多代码后面又会触发其他的钩子，尽可能细的去看它们背后执行了什么。`compile`方法中就是真正的开始编译流程，下面就开始看一下`webpack`是怎么实现的。下面代码都是从上面代码分解出来了，一步一步来了解是怎么实现的。
 
 ```js
+
    compile (callback) {
     // 通过newCompilationParams()获取两个工厂函数
     // createNormalModuleFactory 用于创建NormalModuleFactory
@@ -586,6 +592,7 @@ vscode调试调用栈部分如下图所示：
 这里只关注了`entryPulgin`内部绑定的回调函数，在回调函数中执行`compilation.addEntry(context, dep, options, err=> {})`；
 
 ```js
+  // ./lib/compilation.js
   class Compilation {
     addEntry(context, entry, optionsOrName, callback) {
       // 执行添加入口文件
@@ -708,6 +715,7 @@ vscode调试调用栈部分如下图所示：
 在对所有`module`处理完成之后执行`compiler.compiler`中的`hooks.finishMake`钩子，代码如下:
 
 ```js
+  // ./lib/compiler.js
   class Compiler {
     compile (callback) {
       // 执行make钩子 递归处理module
@@ -756,12 +764,14 @@ vscode调试调用栈部分如下图所示：
 - `chunk`: 由一个或者多个`module`组成，它是 webpack 编译打包后输出的最终文件；
 
 ```js
+  // lib/compilation.js
   class Compilation {
     seal (callback) {
       // 实例ChunkGraph类
       const chunkGraph = new ChunkGraph(this.moduleGraph);
       // 触发compilation.hooks.seal钩子
       this.hooks.seal.call();
+      
       // 优化compilation.modules中的dependencies
       while (this.hooks.optimizeDependencies.call(this.modules)) {
         /* empty */
@@ -802,9 +812,10 @@ vscode调试调用栈部分如下图所示：
           }
         }
       }
-      //* 用于创建chunkGraph
+      //* 用于创建chunkGraph moduleGraph
       buildChunkGraph(this, chunkGraphInit);
 
+      // 触发优化钩子
       this.hooks.optimize.call();
 
       // 执行各种优化modules钩子
@@ -837,8 +848,32 @@ vscode调试调用栈部分如下图所示：
           this.codeGeneration(err => {
             // 生成chunk的Hash
             const codeGenerationJobs = this.createHash();
+
+            // 执行生成代码方法
             this._runCodeGenerationJobs(codeGenerationJobs, err => {
+              // 执行 (NormalModule)module.codeGeneration 生成源码
+              // 这个其中又会涉及到 大致5模板用于生成代码
+              // Template.js
+              // MainTemplate.js
+              // ModuleTemplate.js
+              // RuntimeTemplate
+              // ChunkTemplate.js
+              this._codeGenerationModule(module, runtime, runtimes, hash, dependencyTemplates, chunkGraph, moduleGraph, runtimeTemplate, errors, results, callback)
+
+              // 清除资源
+              this.clearAssets();
               
+              // 创建module资源
+              this.createModuleAssets() {
+                // 触发钩子
+                compilation.hooks.moduleAsset.call(module, fileName);
+              };
+
+              // 创建chunk资源
+              this.createChunkAssets(callback) {
+                // 开始输出资源
+                this.emitAsset(file, source, assetInfo);
+              }
             })
           })
         })
@@ -846,3 +881,113 @@ vscode调试调用栈部分如下图所示：
     }
   }
 ```
+
+在生成资源时也是相当复杂的，这个只看比较主要的流程：
+
+- 循环`this.entries`入口文件生成`chunk`、`entrypoint`;`onnectChunkGroupAndChunk`建立chunkGraph和chunk之间的联系
+- 循环每一个入口文件的`dependencies`递归生成`moduleGraph`;通过`chunkGraph.connectChunkAndEntryModule(chunk, module, entrypoint);`用于建立chunk和Module之间的联系
+- `buildChunkGraph(this, chunkGraphInit);`，用于生成`ChunkGraph`
+
+ 1. `visitModules`方法: 主要建立了 chunkGroup,chunk,module（包括同步异步）之间的从属关系; `module` 与该 `module` 内导入其他模块的关系，同步存入 `modules`，异步存入 `blocks`。
+ 2. `connectChunkGroups`： 建立了不同 chunkGroup 之间的父子关系。
+ 3. `cleanupUnconnectedGroups`: 主要清理了无用 chunk 并清理相关的联系。
+
+- `compilation.hooks.xxxx`开始优化`modules`、`chunks`、`chunkGroups`等等
+- `optimization.splitChunk`、`tree-sheaking`都是这个这个阶段做的
+- `compilation.codeGeneration => compilation._runCodeGenerationJobs => compilation._codeGenerationModule`会执行到`module.codeGeneration` 生成代码，这里又会涉及到生成代码要用到的`template`
+- `compilation.createModuleAssets => compilation.emitAsset` 用于生成要输出的文件对象。
+
+在执行完成`compilation.emitAsset`后会回到`compiler`文件中执行代码如下：
+
+```js
+  // lib/compiler.js
+  class Compiler {
+    // 执行 compiler.emitAssets
+    emitAssets () {
+      let outputPath;
+      // 输出打包结果文件的方法
+      const emitFiles = err => {
+        // ...
+      };
+      // 触发compiler.hooks.emit钩子
+      // 触发CleanPlugin中绑定的函数
+      // 触发LibManifestPlugin中绑定的函数 生成lib包
+      this.hooks.emit.callAsync(compilation, err => {
+        if (err) return callback(err);
+        // 获取输出路径
+        outputPath = compilation.getPath(this.outputPath, {});
+        // 递归创建输出目录，并输出资源
+        mkdirp(this.outputFileSystem, outputPath, emitFiles);
+      });
+    }
+    compile(callback) {
+      // 省略代码
+      // 执行完成seal 代码封装，就要输出封装好的文件
+      compilation.seal(err => {
+        // 触发钩子
+        this.hooks.afterCompile.callAsync(compilation, err => {
+          // 执行run函数中传入的onCompiled
+          return callback(null, compilation);
+        });
+      });
+    }
+    run (callback) {
+      // 省略代码
+      // emit入口
+      const onCompiled = (err, compilation) => {
+        process.nextTick(() => {
+          // 执行shouldEmit钩子上的方法，若返回false则不输出构建资源
+          if (this.hooks.shouldEmit.call(compilation) === false) {
+            // stats包含了本次构建过程中的一些数据信息
+            const stats = new Stats(compilation);
+            stats.startTime = startTime;
+            stats.endTime = Date.now();
+            // 执行done钩子上的方法，并传入stats
+            this.hooks.done.callAsync(stats, err => {
+              if (err) return finalCallback(err);
+              return finalCallback(null, stats);
+            });
+            return;
+          }
+          // 调用Compiler.emitAssets输出资源
+          this.emitAssets(compilation, err => {
+            // 执行shouldEmit钩子上的方法，若返回false则不输出构建资源
+            if (compilation.hooks.needAdditionalPass.call()) {
+              // compilation上添加属性
+              compilation.needAdditionalPass = true;
+              compilation.startTime = startTime;
+              compilation.endTime = Date.now();
+              // 实例化Stats类
+              const stats = new Stats(compilation);
+              // 触发compiler.hooks.done钩子
+              this.hooks.done.callAsync(stats, err => {
+                this.hooks.additionalPass.callAsync(err => {
+                  this.compile(onCompiled);
+                });
+              });
+            }
+            // 输出构建记录
+            this.emitRecords(err => {
+              const stats = new Stats(compilation);
+              // 执行compiler.hooks.done钩子
+              this.hooks.done.callAsync(stats, err => {
+              });
+            });
+          });
+        });
+      };
+      // 运行compiler.run
+      const run = () => {
+        this.compile(onCompiled);
+      }
+    }
+  }
+```
+
+大致流程执行如下`compiler.run => run(内部run) => compiler.compile => onCompiled(内部onCompiled) => compiler.emitAssets => compiler.emitRecords`。
+
+- 触发`compiler.hooks.shouldEmit.call(compilation)`钩子，会执行`if (compilation.getStats().hasErrors()) return false;`如果在编译过程中存在报错信息返回`false`，输出报错信息(不输出编译结果)，结束编译
+- `compiler.emitAssets`会中会创建`emitFiles`方法用于输出文件到硬盘中。
+- `compiler.hooks.emit.callAsync()`触发`emit`钩子执行对应的操作如清除文件、处理lib。
+- 通过`compilation.getPath(this.outputPath, {});`获取输出路径；执行`mkdirp(this.outputFileSystem, outputPath, emitFiles);`递归输出文件
+- `compiler.emitRecords`
