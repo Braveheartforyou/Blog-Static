@@ -971,6 +971,14 @@ vscode调试调用栈部分如下图所示：
               const stats = new Stats(compilation);
               // 执行compiler.hooks.done钩子
               this.hooks.done.callAsync(stats, err => {
+                if (err) return finalCallback(err);
+                this.cache.storeBuildDependencies(
+                  compilation.buildDependencies,
+                  err => {
+                    if (err) return finalCallback(err);
+                    return finalCallback(null, stats);
+                  }
+                );
               });
             });
           });
@@ -990,4 +998,78 @@ vscode调试调用栈部分如下图所示：
 - `compiler.emitAssets`会中会创建`emitFiles`方法用于输出文件到硬盘中。
 - `compiler.hooks.emit.callAsync()`触发`emit`钩子执行对应的操作如清除文件、处理lib。
 - 通过`compilation.getPath(this.outputPath, {});`获取输出路径；执行`mkdirp(this.outputFileSystem, outputPath, emitFiles);`递归输出文件
-- `compiler.emitRecords`
+- `compiler.emitRecords`如果配置了`recordsOutputPath`就会把记录写入制定位置。
+
+再看一下`compiler.emitAsset =>  emitFiles`webpack是怎么把文件写入到本地的。
+
+```js
+  // lib/compiler.js
+  // complier.emitAssets(compliation, callback) => emitFiles
+  const emitFiles = err => {
+    // 异步的forEach方法
+    asyncLib.forEachLimit(
+      compilation.getAssets(),
+      15, // 最多同时执行15个异步任务
+      ({ name: file, source }, callback) => {
+        // 执行写文件操作
+        const writeOut = err => {
+          // ...
+        };
+        // 若目标文件路径包含/或\，先创建文件夹再写入
+        if (targetFile.match(/\/|\\/)) {
+          const dir = path.dirname(targetFile);
+          this.outputFileSystem.mkdirp(
+            this.outputFileSystem.join(outputPath, dir),
+            writeOut
+          );
+        } else {
+          writeOut();
+        }
+      },
+      // 遍历完成的回调函数
+      err => {
+        if (err) return callback(err);
+              // 执行afterEmit钩子上的方法
+        this.hooks.afterEmit.callAsync(compilation, err => {
+          if (err) return callback(err);
+          // 构建资源输出完成执行回调
+          return callback();
+        });
+      }
+    );
+  }
+```
+
+执行上面的文件写入后，就会触发`compiler.hooks.done.callAsync`钩子，最后执行`finalCallback(null, stats);`。输出`stats`信息。
+
+```js
+  // ./lib/compiler.js
+  // compiler.hooks.done => compiler
+  const finalCallback = (err, stats) => {
+    this.idle = true;
+    this.cache.beginIdle();
+    this.idle = true;
+    this.running = false;
+    if (err) {
+      this.hooks.failed.call(err);
+    }
+    if (callback !== undefined) callback(err, stats);
+    // 执行钩子
+    this.hooks.afterDone.call(stats);
+  };
+```
+
+执行`this.hooks.afterDone`钩子，到此所有的编译流程就都结束了。
+
+## 总结
+
+webpack整个编译流程是非常的复杂的，这里只是看了一部分比较主要的流程，但是我很多细节的流程也完整的看完。包含不仅限于一下几个：
+
+- webpack是怎么根据模板生成代码的，怎么处理`export`模块化的？
+- webpack中的`NormalModuleFactory`都作了那些事情？
+- webpack中的`SourceMap`是怎么实现的？
+- webpack中的`loader`是怎么被解析的，怎么运行的？
+- webpack中的`hrm`是怎么实现的？
+- webpack中是怎么组织`chunk`的？
+
+其实上面的部分问题，在上面的流程中大致有介绍，但是很多细节都还是没有看完，后面会慢慢完善。
