@@ -213,3 +213,142 @@ Sourcemap发展史的有趣之处在于，它作为一款辅助工具被开发�
 
 ### 优化手段5: VLQ编码
 
+经过上面几步操作之后，现在最应该优化的地方应该就是用来分割数字的`"|"`号了。 这个优化应该怎么实现呢？ 在回答之前，先来看这样一个问题——如果你想顺序的记录4组数字，最简单的就是用`"|"`号进行分割。
+
+`1|2|3|4`
+
+如果每个数字只有1位的话，可以直接表示成
+
+`1234`
+
+但是很多时候每个数字不止有1位，比如
+
+`12|3|456|7`
+
+这个时候，就一定得用符号把各个数字分割开，像我们上面例子中一样。还有好的方法嘛？ 通过VLQ编码的方式，你可以很好的处理这种情况，先来看看VLQ的定义：
+
+#### VLQ定义
+
+> A variable-length quantity (VLQ) is a universal code that uses an arbitrary number of binary octets (eight-bit bytes) to represent an arbitrarily large integer.
+翻译一下：VLQ是用任意个2进制字节组去表示一个任意数字的编码形式。
+
+[VLQ](https://en.wikipedia.org/wiki/Variable-length_quantity)的编码形式很多，这篇文章中要说明的是下面这种：
+
+![VLQ](https://user-gold-cdn.xitu.io/2019/6/17/16b658c9d42e7bd4?imageView2/0/w/1280/h/960/format/webp/ignore-error/1)
+
+- 一个组包含6个二进制位。
+- 在每组中的第一位C用来标识其后面是否会跟着另一个VLQ字节组,值为0表示其是最后一个VLQ字节组，值为1表示后面还跟着另一个VLQ字节组。
+- 在第一组中，最后1位用来表示符号，值为0则表示正数，为1表示负数。其他组的最后一位都是表示数字。
+- 其他组都是表示数字。
+
+**这种编码方式也称为Base64 VLQ编码，因为每一个组对应一个Base64编码。**
+
+#### 小例子说明VLQ
+
+现在我们用这套VLQ编码规则对`12|3|456|7`进行编码，先将这些数字转换为二进制数。
+
+```js
+12  ——> 1100
+3   ——> 11
+456 ——> 111001000
+7   ——> 111
+```
+
+- 对12进行编码
+
+12需要1位表示符号，1位表示是否延续，剩下的4位表示数字
+
+| B5(C) | B4 | B3 | B2 | B1 | B0 |
+|:----:|:----:|:----:|:----:|:----:|:----:|
+| 0 |1 | 1 | 0 | 0 | 0 |
+
+对3进行编码
+
+| B5(C) | B4 | B3 | B2 | B1 | B0 |
+|:----:|:----:|:----:|:----:|:----:|:----:|
+| 0 | 0 | 0 | 1 | 1 | 0 |
+
+对456进行编码
+
+从转换关系中能够看到，`456`对应的二进制已经超过了6位，用1组来表示肯定是不行的，这里需要用两组字节组来表示。先拆除最后4个数`(1000)`放入第一个字节组，剩下的放在跟随字节组中。
+
+| B5(C) | B4 | B3 | B2 | B1 | B0 | | B5(C) | B4 | B3 | B2 | B1 | B0 |
+|:----:|:----:|:----:|:----:|:----:|:----:|:--:|:----:|:----:|:----:|:----:|:----:|:----:|
+| 1 | 1 | 0 | 0 | 0 | 0 |    | 0 | 1 | 1 | 1 | 0 | 0 |
+
+对7进行编码
+
+| B5(C) | B4 | B3 | B2 | B1 | B0 |
+|:----:|:----:|:----:|:----:|:----:|:----:|
+| 0 | 0 | 1 | 1 | 1 | 0 |
+
+最后得到下列VLQ编码:
+
+`011000 000110 110000 011100 001110`
+
+通过Base64进行转换之后：
+
+![base64对应码](https://user-gold-cdn.xitu.io/2019/6/17/16b658ca2f5f0e2d?imageView2/0/w/1280/h/960/format/webp/ignore-error/1)
+
+最终得到下列结果:
+
+`YGwcO`
+
+#### 转换之前的例子
+
+通过上面这套VLQ的转换流程转换之前的例子，先来编码`1|0|1|6|2`. 转换成VLQ为：
+
+```js
+1 ——> 1(二进制) ——> 000010(VLQ)
+0 ——> 0(二进制) ——> 000000(VLQ)
+1 ——> 1(二进制) ——> 000010(VLQ)
+6 ——> 110(二进制) ——> 001100(VLQ)
+2 ——> 10(二进制) ——> 000100(VLQ)
+```
+
+合并后编码为:
+
+`000010 000000 000010 001100 000100`
+
+转换成Base64:
+
+`BABME`
+
+其他也是按这种方式编码，最后得到的`mapping`文件如下：
+
+```js
+{
+  sources: ['输入文件1.txt'],
+  names: ['I', 'am', 'Chris'],
+  mappings: "BABME,OABBA,SABGB" // (长度: 17)
+}
+```
+
+## webpack中的sorceMap
+
+webpack中通过`devtool`配置进行控制`sourceMap.map`文件的生成，可以大致把`devtool`大致分为以下几类：
+
+*The pattern is: [inline-|hidden-|eval-][nosources-][cheap-[module-]]source-map.*
+
+- eval：打包后的模块都使用 `eval()` 执行，行映射可能不准；不产生独立的 map 文件， 四中带有 eval 的对比请看[四种 eval 对比](https://webpack.docschina.org/configuration/devtool/).
+- source-map： 生成一个单独的 `source map` 文件，即 `.map` 文件。（注意与 `source map` 这个统称概念区分）
+- cheap：`source map` 没有列映射(column mapping)，忽略 `loader source map`。
+- module：将 `loader source map` 简化为每行一个映射(mapping)，比如 jsx to js ，babel 的 source map，**增加第三方库的 error、warning 追踪**。
+- inline：`source map` 通过 `Data URLs` 的方式添加到 `bundle` 中。
+- hidden：不会为 `bundle` 添加引用注释。
+- nosources：`source map` 不包含 `sourcesContent`(源代码内容)。
+
+> `**-hidden-**`或`**-hidden-**`对线上环境来说是非常重要的配置，既能收集堆栈信息又可以不暴露自己的源码映射。
+
+下面以`devtool: source-map`为配置项，以webpack源码的角度来看一下，是怎么生成`soruceMap`的。
+
+### webpack中是如何生成sourceMap
+
+我们这里的调试代码还是通过[调试webpack代码](./debug.md)这边文档里面的代码做实例。在这个实例中的`webpack.config.js`中有配置过`devtool: 'source-map'`。先把主要的讲清楚：
+
+- webpack中的`source-map`是在运行`runLoader`时生成，也就是在`bable-loader`中生成的`source-map`.
+- `bable-loader`也是通过`(mozilla的source-map)[https://github.com/mozilla/source-map]`生成的。
+
+调试`webpack`中的源码时非常复杂和繁琐的，在大部分时候也是没有意义的，因为很少有人会想了解这部分内容因为够用就行。
+
+我们直接从
