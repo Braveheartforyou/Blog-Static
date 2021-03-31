@@ -1,5 +1,7 @@
 ## SourceMap
 
+> **webpack版本为 5.28.0**
+
 `sourceMap`对现在的项目来说也是比较重要的，因为在打包完成之后的代码是经过`混淆`、`压缩`的，不能很好的进行定位。如果想看到准确的代码位置，`Source Maps（源映射）` 通过提供原始代码和转换后代码之间的映射 来解决这个问题。
 
 本篇文章大致小节如下：
@@ -342,6 +344,16 @@ webpack中通过`devtool`配置进行控制`sourceMap.map`文件的生成，可�
 
 下面以`devtool: source-map`为配置项，以webpack源码的角度来看一下，是怎么生成`soruceMap`的。
 
+全部的主流程如下：
+
+- runLoaders
+- babel-loader
+- babel-loader/transfrom
+- @babel-core/transfrom
+- @babel-core/_transformation.run
+- @babel-core/_generate.default
+
+
 ### webpack中是如何生成sourceMap
 
 我们这里的调试代码还是通过[调试webpack代码](./debug.md)这边文档里面的代码做实例。在这个实例中的`webpack.config.js`中有配置过`devtool: 'source-map'`。先把主要的讲清楚：
@@ -351,4 +363,212 @@ webpack中通过`devtool`配置进行控制`sourceMap.map`文件的生成，可�
 
 调试`webpack`中的源码时非常复杂和繁琐的，在大部分时候也是没有意义的，因为很少有人会想了解这部分内容因为够用就行。
 
-我们直接从
+如果想了解[webpack 编译流程](./create-compiler.md)可以看这边文章。因为`loader`位置解析和`loaderContext`也是比较复杂的，这里就不展开了，如果有机会后面会再写一篇`loader`的解析。
+
+### runLoaders
+
+这里直接从`runLoaders`，在这个时候就会调用对应的`loader`来解析`source`文件，代码如下：
+
+**webpack源码 ./lib/NormalModule.js**
+
+```js
+const { getContext, runLoaders } = require("loader-runner");
+  // webpack源码
+  // ./lib/NormalModule.js
+  doBuild(options, compilation, resolver, fs, callback) {
+    // 调用this.createLoaderContext 创建 loaderContext
+    const loaderContext = this.createLoaderContext(
+      resolver,
+      options,
+      compilation,
+      fs
+    );
+
+    const processResult = (err, result) => {
+
+      // 省略
+
+      callback(err)
+    }
+    // 执行对应钩子
+    try {
+      hooks.beforeLoaders.call(this.loaders, this, loaderContext);
+    } catch (err) {
+      processResult(err);
+      return;
+    }
+    // 运行runLoaders
+    runLoaders(
+      {
+        // 指向的入口文件地址 '/Users/admin/Desktop/velen/student/webpack/debug/src/index.js'
+        resource: this.resource,
+        // babel-loader
+        loaders: this.loaders,
+        // loaderContext 包含了 compiler、compilation、文件地址等等
+        context: loaderContext,
+        processResource: (loaderContext, resource, callback) => {
+          const scheme = getScheme(resource);
+          if (scheme) {
+            hooks.readResourceForScheme
+              .for(scheme)
+              .callAsync(resource, this, (err, result) => {
+                if (err) return callback(err);
+                if (typeof result !== "string" && !result) {
+                  return callback(new UnhandledSchemeError(scheme, resource));
+                }
+                return callback(null, result);
+              });
+          } else {
+            loaderContext.addDependency(resource);
+            fs.readFile(resource, callback);
+          }
+        }
+      },
+      (err, result) => {
+        if (!result) {
+          return processResult(
+            err || new Error("No result from loader-runner processing"),
+            null
+          );
+        }
+        // 省略代码
+        // 执行传入的回调函数
+        processResult(err, result.result);
+      }
+    );
+  }
+
+```
+
+调用`runLoaders`并且传入要处理的源码`source`、`loaders`、`context`，在后续调用loader时候要使用到。 `runLoaders`是另一个npm包`loader-runner`，在我开发自己的`loader`时可以使用`loader-runner`来调试。
+
+`runLoaders`就会走到`node_modules/babel-loader/lib/index.js`，执行`_loader`进行`loaderOptions`的配置，然后会调用`transform(source, options)`进行转换代码。代码如下：
+
+#### _loader()
+
+**node_moduels/babel-loader/lib/index.js**
+
+```js
+  // node_moduels/babel-loader/lib/index.js
+  // 注意transform是babel-loader下的
+  const transform = require("./transform");
+  function _loader() {
+    _loader = _asyncToGenerator(function* (soruce, inputSourceMap, overrids) {
+      // 处理loaderOptions
+      // 省略代码
+
+      // 对传入的sourceMap参数进行判断
+      const programmaticOptions = Object.assign({}, loaderOptions, {
+        // '/Users/admin/Desktop/velen/student/webpack/debug/src/index.js'
+        filename,
+        // undefined
+        inputSourceMap: inputSourceMap || undefined,
+        // Set the default sourcemap behavior based on Webpack's mapping flag,
+        // but allow users to override if they want.
+        sourceMaps: loaderOptions.sourceMaps === undefined ? this.sourceMap : loaderOptions.sourceMaps,
+        // Ensure that Webpack will get a full absolute path in the sourcemap
+        // so that it can properly map the module back to its internal cached
+        // modules.
+        sourceFileName: filename
+      }); // Remove loader related options
+      // 一系列参数处理
+      if (config) {
+        // 参数配置
+        // 判定是否有缓存
+        if (cacheDirectory) {
+          // 省略
+        } else {
+          // 执行transform 方法传入 源字符串和配置对象
+          result = yield transform(source, options);
+        }
+      }
+      // 等上面的transform异步方法执行完成后
+      if (result) {
+        if (overrides && overrides.result) {
+          result = yield overrides.result.call(this, result, {
+            source,
+            map: inputSourceMap,
+            customOptions,
+            config,
+            options
+          });
+        }
+
+        const {
+          code,
+          map,
+          metadata
+        } = result;
+        metadataSubscribers.forEach(subscriber => {
+          subscribe(subscriber, metadata, this);
+        });
+        return [code, map];
+      }
+    })
+    return _loader.apply(this, arguments);
+  }
+
+```
+
+首先讲一下大致流程，因为`babel-loader`中也有很多异步流程，所以很难梳理清楚很细节的执行流程，这里主要看一下主流程：
+
+- 调用`_loader`方法，`_loader`方法内部有一个通过`_asyncToGenerator`包裹的方法
+- 对`loaderOptions`进行一系列的配置，如果在`webpack.config.js`其中对`babel-loader`配置了，会进行合并
+- `loaderOptions`处理完成之后判断是否存在缓存，如果不存在调用`result = yield transform(source, options);`，`transform`是一个异步的，等这个异步完成再进行后面的操作
+
+> 同时注意`babel-loader`中使用了很多`Generator`来保证代码异步执行的顺序，如果有兴趣可以看我另一篇文章[前端generator](./generator.md)
+
+#### transform(source, options)
+
+**node_moduels/babel-loader/lib/transform.js**
+
+```js
+  // **node_moduels/babel-loader/lib/transform.js**
+  // 引入babel的核心包
+  const babel = require("@babel/core");
+  // 通过promisify把babel.transform转换为promise函数
+  const transform = promisify(babel.transform);
+
+  module.exports = /*#__PURE__*/function () {
+    var _ref = _asyncToGenerator(function* (source, options) {
+      let result;
+        try {
+          // 调用babel上的transform方法 把源码转为ast抽象语法树
+          result = yield transform(source, options);
+        } catch (err) {
+          throw err.message && err.codeFrame ? new LoaderError(err) : err;
+        }
+        if (!result) return null;
+        // 解构返回结果result
+        const {
+          ast,
+          code,
+          map,
+          metadata,
+          sourceType
+        } = result;
+
+        if (map && (!map.sourcesContent || !map.sourcesContent.length)) {
+          map.sourcesContent = [source];
+        }
+        // 返回解构的值
+        return {
+          ast,
+          code,
+          map,
+          metadata,
+          sourceType
+        };
+    });
+    return function (_x, _x2) {
+        return _ref.apply(this, arguments);
+      };
+    }
+  }();
+```
+
+在`@babel/core/lib/index.js`中通过`Object.defineProperty`对`transform`方法进行了劫持。在执行`promisify(babel.transform);`时候就会执行`_transform.transform;`
+在`transfrom`文件中是一个**自执行方法**，`transform()`内部执行如下：
+
+- 引入`@babel/core`包，并且把`promisify(babel.transform);`转换为`promise`类型的函数
+- 在导出默认
