@@ -1,0 +1,16 @@
+{
+  "name": "soruce-map",
+  "version": "1.0.0",
+  "description": "",
+  "main": "foo.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "source-map": "^0.7.3",
+    "vlq": "^1.0.1"
+  }
+}

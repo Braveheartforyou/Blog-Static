@@ -444,7 +444,7 @@ const { getContext, runLoaders } = require("loader-runner");
 
 `runLoaders`就会走到`node_modules/babel-loader/lib/index.js`，执行`_loader`进行`loaderOptions`的配置，然后会调用`transform(source, options)`进行转换代码。代码如下：
 
-#### _loader()
+### babel-laoder => _loader()
 
 **node_moduels/babel-loader/lib/index.js**
 
@@ -518,7 +518,7 @@ const { getContext, runLoaders } = require("loader-runner");
 
 > 同时注意`babel-loader`中使用了很多`Generator`来保证代码异步执行的顺序，如果有兴趣可以看我另一篇文章[前端generator](./generator.md)
 
-#### transform(source, options)
+### _loader() => transform(source, options)
 
 **node_moduels/babel-loader/lib/transform.js**
 
@@ -561,14 +561,145 @@ const { getContext, runLoaders } = require("loader-runner");
         };
     });
     return function (_x, _x2) {
-        return _ref.apply(this, arguments);
-      };
-    }
+      return _ref.apply(this, arguments);
+    };
   }();
 ```
 
 在`@babel/core/lib/index.js`中通过`Object.defineProperty`对`transform`方法进行了劫持。在执行`promisify(babel.transform);`时候就会执行`_transform.transform;`
-在`transfrom`文件中是一个**自执行方法**，`transform()`内部执行如下：
+在`transfrom`文件中是一个**`IIFE`(自执行函数)**，`transform()`内部执行如下：
 
 - 引入`@babel/core`包，并且把`promisify(babel.transform);`转换为`promise`类型的函数
-- 在导出默认
+- `module.exports`导出一个`IIFE`(自执行函数)，函数内部又定义了一个`_ref`是一个`_asyncToGenerator`一步方法
+- `_ref`内部直接调用@babel/transform`transform(source, options)`
+
+### @babel/core/lib/transform => transform(source, options)
+
+在`@babel/core`的`transform`方法中首先会处理配置参数，再会调用`_transformRunner.run`开始真正的”转化“。代码如下：
+
+```js
+  // node_module/@babel/core/lib/transform.js
+  // 引入处理config
+  var _config = _interopRequireDefault(require("./config"));
+  var _transformation = require("./transformation");
+  const gensync = require("gensync");
+
+  const transformRunner = gensync(function* transform(code, opts) {
+    // 通过_config.default处理opts
+    const config = yield* (0, _config.default)(opts);
+    // 如果config为null直接返回 null
+    if (config === null) return null;
+    // 执行_transformation.run并且传入  config, code
+    return yield* (0, _transformation.run)(config, code);
+  });
+  // 定义transform方法 传入 code、opts、callback
+  const transform = function transform(code, opts, callback) {
+    if (typeof opts === "function") {
+      callback = opts;
+      opts = undefined;
+    }
+    if (callback === undefined) return transformRunner.sync(code, opts);
+    // 调用transformRunner
+    transformRunner.errback(code, opts, callback);
+  };
+```
+
+### @babel/core/lib/transformation/index.js
+
+执行到`transformation/index.js`，会在这个时候通过`@babel/parser`生成`AST`，再通过`@babel/traverse`进行优化`AST`，最后调用`_generate`来生成代码。简化代码如下：
+
+```js
+  // @babel/core/lib/transformation/index.js
+  // 默认导出run方法
+  exports.run = run;
+  // 加载traverse对生成AST进行遍历维护+优化
+  function _traverse() {
+    const data = _interopRequireDefault(require("@babel/traverse"));
+    _traverse = function () {
+      return data;
+    };
+    return data;
+  }
+  // 在_normalizeFile.default中通过@babel/parser对code转换为AST
+  var _normalizeFile = _interopRequireDefault(require("./normalize-file"));
+  // 通过@babel/traverse维护更新的AST进行代码生成
+  var _generate = _interopRequireDefault(require("./file/generate"));
+  // config 为transform 中创建的config  ast 为 undefined
+  function* run(config, code, ast) {
+    // _normalizeFile.default内部会调用@babel/parser 为code代码生成AST 返回生成的AST和配置对象
+    // file中包含如下：
+    // {
+    //   ast: {}:node,
+    //   code: String,
+    //   hub: { file: this, getCode: function, getScope: function }:Object,
+    //   inputMap: null,
+    //   path: {}:NodePath,
+    //   scope: {}:Scope
+    // }
+    const file = yield* (0, _normalizeFile.default)(config.passes, (0, _normalizeOpts.default)(config), code, ast);
+    const opts = file.opts;
+    try {
+      //  执行transformFile 传入 file对象和配置项
+      yield* transformFile(file, config.passes);
+    } catch (e) {
+      throw e;
+    }
+
+    try {
+      if (opts.code !== false) {
+        ({
+          outputCode,
+          outputMap // 调用_generate方法进行代码生成
+        } = (0, _generate.default)(config.passes, file));
+      }
+    } catch (e) {
+      throw e;
+    }
+    // 返回对象
+    return {
+      metadata: file.metadata,
+      options: opts,
+      ast: opts.ast === true ? file.ast : null,
+      code: outputCode === undefined ? null : outputCode,
+      map: outputMap === undefined ? null : outputMap,
+      sourceType: file.ast.program.sourceType
+    };
+  }
+  // 创建transformFile方法，传入parser转换完成的AST对象
+  function* transformFile(file, pluginPasses) {
+    const passPairs = [];
+    const passes = [];
+    const visitors = [];
+
+    for (const plugin of pluginPairs.concat([(0, _blockHoistPlugin.default)()])) {
+      const pass = new _pluginPass.default(file, plugin.key, plugin.options);
+      passPairs.push([plugin, pass]);
+      passes.push(pass);
+      visitors.push(plugin.visitor);
+    }
+    // 创建visitor
+    const visitor = _traverse().default.visitors.merge(visitors, passes, file.opts.wrapPluginVisitorMethod);
+    // 调用_traverse处理AST 传入
+    (0, _traverse().default)(file.ast, visitor, file.scope);
+  }
+```
+
+> 这里就不展开看`@babel/parser`和`@babel/traverse`的内容了，如果感兴趣可以看篇文章[babel详解](./babel.md)
+
+执行步骤如下：
+
+- 在`run`方法中会执行`_normalizeFile.default`前会调用`(0, _normalizeOpts.default)(config)`来处理配置项，返回`options`.
+- `(0, _normalizeFile.default)(config.passes, options, code, ast)`开始把传入的`code`通过`@babel/parser`生成`AST`
+- 返回的`file`对象后，执行`transformFile(file, config.passes)`。
+- 在`transformFile`首先生成了`visitor(访问者)`对象，再执行`(0, _traverse().default)(file.ast, visitor, file.scope);`传入`AST`、`visitor`、`scope`。会遍历更新`AST`上面的节点。
+- 下面执行到`(0, _generate.default)(config.passes, file))`用来生成转译后的`es2015代码`和`sourceMap`
+
+### @babel/core/lib/transformation/file/generate.js
+
+`_generate.default`就是`generateCode`方法：
+
+```js
+  exports.default = generateCode;
+  
+```
+
