@@ -14,6 +14,7 @@
 整体的编译流程大致如图所示，[简单的编译流程推荐文章](https://juejin.cn/post/6844903935828819981/)。
 
 ![webpack 编译流程](https://user-gold-cdn.xitu.io/2019/9/5/16d00393b89a5d42?imageslim)
+
 ## webpack入口
 
 首先明确一点本文章只关注webpack编译流程中主要流程，会按照上图所以的打包流程按照源码来记录。在保证记录主流程的基础上尽量说道各个主要的细节点。
@@ -24,7 +25,6 @@ webpack源码内部主要的概念：
 
 - `compiler 对象`代表了完整的 `webpack 环境配置`。这个对象在启动 webpack 时被一次性建立，并配置好所有可操作的设置，包括 `options`，`loader` 和 `plugin`。当在 webpack 环境中应用一个插件时，插件将收到此 `compiler 对`象的引用。可以使用它来访问 webpack 的主环境。
 - `compilation` 对象代表了一次资源版本构建。**当运行 webpack 开发环境中间件时，每当检测到一个文件变化，就会创建一个新的 compilation，从而生成一组新的编译资源**。一个 compilation 对象表现了当前的模块资源、编译生成资源、变化的文件、以及被跟踪依赖的状态信息。compilation 对象也提供了很多关键时机的回调，以供插件做自定义处理时选择使用
-- `tapable`
 
 webpack入口中主要做的事情详情如下：
 
@@ -41,6 +41,11 @@ webpack入口中主要做的事情详情如下：
 **调试技巧**
 
 在通过vscode或者浏览器进行调试时，一定要在watch里面添加三个函数`compiler`、`compilation`、`options`，不然你真的很难搞清楚它们是怎么变化的。并且这三个对象真的很复杂，有数不清的属性，回调函数等等。
+
+我调试的断点如下：
+
+### 开始
+
 
 开始调试的代码入口实在debug文件夹内部的代码`const webpack = require('../lib/index.js');const config = require('./webpack.config'); const compiler = webpack(config);`, 通过vscode的调试按钮来开始调试。
 
