@@ -365,7 +365,7 @@ webpack中通过`devtool`配置进行控制`sourceMap.map`文件的生成，可�
 
 *The pattern is: [inline-|hidden-|eval-][nosources-][cheap-[module-]]source-map.*
 
-- eval：打包后的模块都使用 `eval()` 执行，行映射可能不准；不产生独立的 map 文件， 四中带有 eval 的对比请看[四种 eval 对比](https://webpack.docschina.org/configuration/devtool/).
+- eval：每个模块都使用 `eval()` 执行，并且都有 `//@ sourceURL`。此选项会非常快地构建。主要缺点是，由于会映射到转换后的代码，而不是映射到原始代码（没有从 `loader` 中获取 `source map`），所以不能正确的显示行数。
 - source-map： 生成一个单独的 `source map` 文件，即 `.map` 文件。（注意与 `source map` 这个统称概念区分）
 - cheap：`source map` 没有列映射(column mapping)，忽略 `loader source map`。
 - module：将 `loader source map` 简化为每行一个映射(mapping)，比如 jsx to js ，babel 的 source map，**增加第三方库的 error、warning 追踪**。
@@ -644,7 +644,7 @@ const { getContext, runLoaders } = require("loader-runner");
 ```
 
 在`@babel/core/lib/index.js`中通过`Object.defineProperty`对`transform`方法进行了劫持。在执行`promisify(babel.transform);`时候就会执行`_transform.transform;`
-在`transfrom`文件中是一个**`IIFE`(自执行函数)**，`transform()`内部执行如下：
+在`transfrom`文件中是一个`IIFE(自执行函数)`，`transform()`内部执行如下：
 
 - 引入`@babel/core`包，并且把`promisify(babel.transform);`转换为`promise`类型的函数
 - `module.exports`导出一个`IIFE`(自执行函数)，函数内部又定义了一个`_ref`是一个`_asyncToGenerator`一步方法
@@ -801,10 +801,13 @@ const { getContext, runLoaders } = require("loader-runner");
     // 解构_generator方法返回的result的对象；
     // 获取map值会触发 内部绑定的劫持方法
     let { code: outputCode, map: outputMap } = result;
+
+    return { outputCode, outputMap };
   }
 ```
 
-通过
+通过`_generator`内部会生成`source-map`实例，并且往`_rawMapping`添加行列信息，最后会返回`result`对象，`result.map`
+是一个被监听的属性，通过解构访问`map`就会执行`source-map`中的`get()`。会把`_rawMapping`通过`map.addMapping`生成我们要的`sourceMap`对象。
 
 ### @babel/generate/lib/index.js
 
@@ -878,4 +881,537 @@ const { getContext, runLoaders } = require("loader-runner");
   }
 }
 ```
+
+首先看一下`@babel/generate/lib/source-map.js`中的代码：
+
+```js
+  // @babel/generate/lib/source-map.js
+  var _sourceMap = _interopRequireDefault(require("source-map"));
+  class SourceMap {
+    constructor(opts, code) {
+      // 一系列属性赋值
+      this._cachedMap = void 0;
+      this._code = void 0;
+      this._opts = void 0;
+      this._rawMappings = void 0;
+      this._lastGenLine = void 0;
+      this._lastSourceLine = void 0;
+      this._lastSourceColumn = void 0;
+      this._cachedMap = null;
+      this._code = code;
+      this._opts = opts;
+      this._rawMappings = [];
+    }
+    // 劫持get()
+    get() {
+      if (!this._cachedMap) {
+        // 设置source-map中的sourceRoot
+        const map = this._cachedMap = new _sourceMap.default.SourceMapGenerator({
+          sourceRoot: this._opts.sourceRoot
+        });
+        const code = this._code;
+        // 如果源码为string设立SourceContent
+        if (typeof code === "string") {
+          map.setSourceContent(this._opts.sourceFileName.replace(/\\/g, "/"), code);
+        else if (typeof code === "object") {
+          // 如果为对象循环设置SourceContent
+        }
+        // 循环在buffer 中创建好的_rawMappings数组，并且通过addMapping添加进map实例
+        this._rawMappings.forEach(mapping => map.addMapping(mapping), map);
+      }
+    }
+    // 返回实例的_rawMappings数据copy
+    getRawMappings() {
+      return this._rawMappings.slice();
+    }
+    // 会在buffer中被调用把转义好的行列信息添加到_rawMappings数组中
+    mark(generatedLine, generatedColumn, line, column, identifierName, filename, force) {
+      this._rawMappings.push({
+        name: identifierName || undefined,
+        generated: {
+          line: generatedLine,
+          column: generatedColumn
+        },
+        source: line == null ? undefined : (filename || this._opts.sourceFileName).replace(/\\/g, "/"),
+        original: line == null ? undefined : {
+          line: line,
+          column: column
+        }
+      });
+    }
+  }
+```
+
+首先`babel`中的source-map的实现是基于`mozilla/source-map`来实现的，`babel`主要是负责生成代码的行号、列号一系列操作。
+
+### @babel/core/lib/transformation/file/generate.js
+
+回到这里执行`let { code: outputCode, map: outputMap } = result;`，通过解构获取`result`中的map对象会走到`buffer.js`类中执行`map.get()`，又执行到`source-map.js`中的`get()`方法，执行`map.addMapping`的方法后，这个时候`map`的创建已经完成。通过`_cachedMap.JSON`就会返回当前`sourceMap`的JSON对象。
+
+## webpack输出sourceMap
+
+在上面知道了`sourceMap`是通过`babel-loader`生成的，`sourceMap`文件是怎么输出的呢？因为还要在生成的`chunk.js`中添加`//# sourceMappingURL=main.js.map`对应的`sourceMap`路径。
+
+本段代码断点如下：
+
+![输出source-map断点如下](./images/emit-source-map.png)
+
+完成输出要通过两个插件`SourceMapDevToolPlugin`和`EvalSourceMapDevToolPlugin`会根据不同的`devtool`配置项，来加载不同的插件。直接上代码：
+
+```js
+  // ./lib/webpack.js
+  const WebpackOptionsApply = require("./WebpackOptionsApply");
+  const createCompiler = rawOptions => {
+    const options = getNormalizedWebpackOptions(rawOptions);
+    applyWebpackOptionsBaseDefaults(options);
+    const compiler = new Compiler(options.context);
+    compiler.options = options;
+    new NodeEnvironmentPlugin({
+      infrastructureLogging: options.infrastructureLogging
+    }).apply(compiler);
+    if (Array.isArray(options.plugins)) {
+      for (const plugin of options.plugins) {
+        if (typeof plugin === "function") {
+          plugin.call(compiler, compiler);
+        } else {
+          plugin.apply(compiler);
+        }
+      }
+    }
+    applyWebpackOptionsDefaults(options);
+    compiler.hooks.environment.call();
+    compiler.hooks.afterEnvironment.call();
+    // 加载webpack.config.js配置的loader等等操作
+    new WebpackOptionsApply().process(options, compiler);
+    compiler.hooks.initialize.call();
+    return compiler;
+  };
+```
+
+因为这里的具体操作都在另一篇文章中介绍过了，如果想了解请看[webapck 编译流程](./create-compiler.md)。
+这里就不多赘述了，直接看`WebpackOptionsApply`中加载了`sourceMap`的插件。
+
+```js
+  // ./lib/WebpackOptionsApply.js
+  class WebpackOptionsApply extends OptionsApply {
+    constructor() {
+      super();
+    }
+    process(options, compiler) {
+      // 判断webpack.config.js中是否配置了devtool
+      if (options.devtool) {
+        // 判断devtool字段中是否包含了source-map字符串
+        if (options.devtool.includes("source-map")) {
+          const hidden = options.devtool.includes("hidden");
+          const inline = options.devtool.includes("inline");
+          // 是否包含了eval字符串
+          const evalWrapped = options.devtool.includes("eval");
+          const cheap = options.devtool.includes("cheap");
+          const moduleMaps = options.devtool.includes("module");
+          const noSources = options.devtool.includes("nosources");
+          // 根据evalWrapped字段加载不同的字段
+          const Plugin = evalWrapped
+            ? require("./EvalSourceMapDevToolPlugin")
+            : require("./SourceMapDevToolPlugin");
+          // 初始化加载的插件；并且传入compiler对象
+          new Plugin({
+            filename: inline ? null : options.output.sourceMapFilename,
+            moduleFilenameTemplate: options.output.devtoolModuleFilenameTemplate,
+            fallbackModuleFilenameTemplate:
+              options.output.devtoolFallbackModuleFilenameTemplate,
+            append: hidden ? false : undefined,
+            module: moduleMaps ? true : cheap ? false : true,
+            columns: cheap ? false : true,
+            noSources: noSources,
+            namespace: options.output.devtoolNamespace
+          }).apply(compiler);
+        } else if (options.devtool.includes("eval")) {
+          const EvalDevToolModulePlugin = require("./EvalDevToolModulePlugin");
+          new EvalDevToolModulePlugin({
+            moduleFilenameTemplate: options.output.devtoolModuleFilenameTemplate,
+            namespace: options.output.devtoolNamespace
+          }).apply(compiler);
+        }
+    }
+  }
+
+```
+
+两种插件的初始化会在`WebpackOptionsApply().process(options, compiler)`中加载不同的插件，根据`devtool`字段判断加载不同的插件，这里首先看`devtool: 'source-map'`的配置，后面会根据`eval、inline、source-map`对比生成不同的代码。
+
+### SourceMapDevToolPlugin 实现
+
+在`WebpackOptionsApply.process`中实例化了`SourceMapDevToolPlugin`，下面看`SourceMapDevToolPlugin`具体坐了什么。
+
+```js
+  // ./lib/SourceMapDevToolPlugin.js
+  class SourceMapDevToolPlugin {
+    constructor(options = {}) {
+      validate(schema, options, {
+        name: "SourceMap DevTool Plugin",
+        baseDataPath: "options"
+      });
+      // 对传入options进行处理
+      this.sourceMappingURLComment =
+        options.append === false
+          ? false
+          : options.append || "\n//# source" + "MappingURL=[url]";
+      /** @type {string | Function} */
+      this.moduleFilenameTemplate =
+        options.moduleFilenameTemplate || "webpack://[namespace]/[resourcePath]";
+      /** @type {string | Function} */
+      this.fallbackModuleFilenameTemplate =
+        options.fallbackModuleFilenameTemplate ||
+        "webpack://[namespace]/[resourcePath]?[hash]";
+      /** @type {string} */
+      this.namespace = options.namespace || "";
+      /** @type {SourceMapDevToolPluginOptions} */
+      this.options = options;
+    }
+    apply (compiler) {
+      // 处理一些必要配置字段如sourceMapFilename、sourceMappingURLComment
+      const outputFs = compiler.outputFileSystem;
+      const sourceMapFilename = this.sourceMapFilename;
+      const sourceMappingURLComment = this.sourceMappingURLComment;
+      const moduleFilenameTemplate = this.moduleFilenameTemplate;
+      const namespace = this.namespace;
+      const fallbackModuleFilenameTemplate = this.fallbackModuleFilenameTemplate;
+      const requestShortener = compiler.requestShortener;
+      const options = this.options;
+      options.test = options.test || /\.(m?js|css)($|\?)/i;
+      compiler.hooks.compilation.tap("SourceMapDevToolPlugin", compilation => {
+        // 实例化SourceMapDevToolModuleOptionsPlugin会绑定buildModule、runtimeModule钩子
+        new SourceMapDevToolModuleOptionsPlugin(options).apply(compilation);
+        compilation.hooks.processAssets.tapAsync(
+          {
+            name: "SourceMapDevToolPlugin",
+            stage: Compilation.PROCESS_ASSETS_STAGE_DEV_TOOLING,
+            additionalAssets: true
+          },
+          (assets, callback) => {
+            asyncLib.each(
+              files,
+              (file, callback) => {
+              // 是否生成source-map路径到文件中
+            }, err => {
+              if (err) {
+                return callback(err);
+              }
+              // 经过一系列处理
+              const chunkGraph = compilation.chunkGraph;
+              const cache = compilation.getCache("SourceMapDevToolPlugin");
+              // 处理files字段
+
+              const tasks = [];
+              asyncLib.each(
+                files,
+                (file, callback) => {
+                  // 处理cache
+
+                  // 它为每一个目标文件，看情况创建一个task，创建了task的文件在末尾添加sourceMappingURL。
+                  const task = getTaskForFile(
+                    file,
+                    asset.source,
+                    asset.info,
+                    {
+                      module: options.module,
+                      columns: options.columns
+                    },
+                    compilation,
+                    cacheItem
+                  );
+                  if (task) {
+                    // 循环modules moduleToSourceNameMapping中不存在往moduleToSourceNameMapping中添加
+                    for (let idx = 0; idx < modules.length; idx++) {
+                      const module = modules[idx];
+                      if (!moduleToSourceNameMapping.get(module)) {
+                        moduleToSourceNameMapping.set(
+                          module,
+                          ModuleFilenameHelpers.createFilename(
+                            module,
+                            {
+                              moduleFilenameTemplate: moduleFilenameTemplate,
+                              namespace: namespace
+                            },
+                            {
+                              requestShortener,
+                              chunkGraph
+                            }
+                          )
+                        );
+                      }
+                    }
+                    // task添加到tasks中
+                    tasks.push(task);
+                  }
+                }, err => {
+                  if (err) {
+                    return callback(err);
+                  }
+                  // 拼接map路径和名字
+                  asyncLib.each(
+                    tasks,
+                    (task, callback) => {
+                      // 拿到要生成的source-map路径 '\n//# sourceMappingURL=[url]'
+                      let currentSourceMappingURLComment = sourceMappingURLComment;
+                      let asset = new RawSource(source);
+                      // 处理sourceMap配置、如hash等等
+                      if (currentSourceMappingURLComment !== false) {
+                        // 把currentSourceMappingURLComment添加到compilation的asset中
+                        // Add source map url to compilation asset, if currentSourceMappingURLComment is set
+                        // 实例化ConcatSource用于把 source-map 路径写入源码中
+                        asset = new ConcatSource(
+                          asset,
+                          compilation.getPath(
+                            currentSourceMappingURLComment,
+                            Object.assign({ url: sourceMapUrl }, pathParams)
+                          )
+                        );
+                      }
+                      // 更新compilation中的asset
+                      compilation.updateAsset(file, asset, assetInfo);
+                      // 输出文件
+                      compilation.emitAsset(
+                        sourceMapFile,
+                        sourceMapAsset,
+                        sourceMapAssetInfo
+                      );
+                    }, err => {
+                      reportProgress(1.0);
+                      callback(err);
+                    })
+                  })
+                })
+              })
+            })
+          }
+        )
+      }
+
+    }
+  }
+```
+
+以`devtool: 'source-map'`为例，`SourceMapDevToolPlugin`大致执行过程如下：
+
+- 实例化`SourceMapDevToolModuleOptionsPlugin`插件，会在`compiler.hooks.compilation`上绑定回调函数
+- 并且绑定`compilation.hooks.processAssets`钩子的异步回调函数；`compilation.hooks.processAssets`执行时机是在
+`compilation.createChunkAssets`执行完成之后，也就是`chunkAsses`生成之后。
+- 判断是否生成了`source-map`，如果生成了创建`task`并且添加到`tasks`中，后续循环`tasks`数据进行`source-map`的路径创建
+- 通过`ConcatSource`把`RawSource`和`currentSourceMappingURLComment`合并，再通过`compilation.updateAsset`更新对应的`assets`对象。
+
+### 结论
+
+到此通过`runLoaders()`会返回通过`babel-loader`编译好的源码和`sourceMap`对象，在后面通过`SourceMapDevToolPlugin`中绑定`compilation.hooks.processAssets`钩子的回调函数，把对应的`source-map`的路径添加进对应的`chunk`源码中，后续就是对应的调用`emit`流程。
+
+### 其它sourceMap相关
+
+在`webpack.config.js`中也可以直接在`plugin`中配置`webpack.SourceMapDevToolPlugin`来指定`sourceMap-url`的生成规则。
+> 注意： `devtool`和`webpack.SourceMapDevToolPlugin`不要同时使用
+
+同时`optimization.minimizer`也可以配置`sourceMap: false`是否生成。
+
+在`webpack 4.x`的前面版本，还是通过`uglifyjs-webpack-plugin`来实现代码的压缩，但是在`webpack 5.x`版本就没有引用了。
+
+### webpack中devtool不同配置
+
+webpack中大致分为`eval`、`source-map`、`cheap`、`module`、`inline`、`hidden`、`nosources`大致几类对比一下生成的`sourceMap`记性对比。
+
+#### devtool: "source-map"配置
+
+生成一个独立的`*.map`的文件用于存储映射的路径、行列、源码。
+
+**mian.js**
+
+```js
+  // 大小为 213btyes
+
+  /******/ (() => { // webpackBootstrap
+  var __webpack_exports__ = {};
+  /*!**********************!*\
+    !*** ./src/index.js ***!
+    \**********************/
+  "I AM CHRIS";
+  /******/ })()
+  ;
+  //# sourceMappingURL=main.js.map
+```
+
+**main.js.map**
+
+```json
+// 大小为 163btyes
+
+{"version":3,"sources":["webpack://debug/./src/index.js"],"names":[],"mappings":";;;;;AAAA,a","file":"main.js","sourcesContent":["\"I AM CHRIS\""],"sourceRoot":""}
+```
+
+#### devtool: "eval"配置
+
+**mian.js**
+
+```js
+  // 大小为 1KB
+
+  /******/ (() => { // webpackBootstrap
+  /******/ 	var __webpack_modules__ = ({
+
+  /***/ "./src/index.js":
+  /*!**********************!*\
+    !*** ./src/index.js ***!
+    \**********************/
+  /***/ (() => {
+
+  eval("\"I AM CHRIS\";\n\n//# sourceURL=webpack://debug/./src/index.js?");
+
+  /***/ })
+
+  /******/ 	});
+  /************************************************************************/
+  /******/ 	
+  /******/ 	// startup
+  /******/ 	// Load entry module and return exports
+  /******/ 	// This entry module can't be inlined because the eval devtool is used.
+  /******/ 	var __webpack_exports__ = {};
+  /******/ 	__webpack_modules__["./src/index.js"]();
+  /******/ 	
+  /******/ })()
+  ; 
+```
+
+#### devtool: "cheap-source-map" or "cheap-module-source-map" 配置
+
+- `cheap-source-map`: 生成独立的`.map`文件，但是没有列映射(`column mapping`)的 `source map`，忽略 `loader source map`。
+- `cheap-module-source-map`: 没有列映射(`column mapping`)的 `source map`，将 `loader source map` 简化为每行一个映射(`mapping`)。
+
+**mian.js**
+
+```js
+  // 大小为 213btyes
+
+  /******/ (() => { // webpackBootstrap
+  var __webpack_exports__ = {};
+  /*!**********************!*\
+    !*** ./src/index.js ***!
+    \**********************/
+  "I AM CHRIS";
+  /******/ })()
+  ;
+  //# sourceMappingURL=main.js.map
+```
+
+**main.js.map**
+
+```json
+// 大小为 154btyes
+
+{"version":3,"file":"main.js","sources":["webpack://debug/./src/index.js"],"sourcesContent":["\"I AM CHRIS\";"],"mappings":";;;;;AAAA;;A","sourceRoot":""}
+```
+
+#### devtool: "inline-source-map"配置
+
+完整的`source map`对象，`source map` 转换为 `DataUrl` 后添加到 `bundle` 中。
+
+**mian.js**
+
+```js
+  // 大小为 465btyes
+
+/******/ (() => { // webpackBootstrap
+var __webpack_exports__ = {};
+/*!**********************!*\
+  !*** ./src/index.js ***!
+  \**********************/
+"I AM CHRIS";
+/******/ })()
+;
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly9kZWJ1Zy8uL3NyYy9pbmRleC5qcyJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiOzs7OztBQUFBLGEiLCJmaWxlIjoibWFpbi5qcyIsInNvdXJjZXNDb250ZW50IjpbIlwiSSBBTSBDSFJJU1wiIl0sInNvdXJjZVJvb3QiOiIifQ==
+```
+
+#### devtool: "hidden-source-map"配置
+
+这个与`source-map`差别就是在`mian.js`中没有对`source map`路径的引用。
+
+**mian.js**
+
+```js
+  // 大小为 180btyes
+
+  /******/ (() => { // webpackBootstrap
+  var __webpack_exports__ = {};
+  /*!**********************!*\
+    !*** ./src/index.js ***!
+    \**********************/
+  "I AM CHRIS";
+  /******/ })()
+  ;
+```
+
+#### devtool: "nosources-source-map"配置
+
+在创建`source map`的时候不添加`sourcesContent`字段。
+
+**main.js.map**
+
+```json
+// 大小为 127btyes
+
+{"version":3,"sources":["webpack://debug/./src/index.js"],"names":[],"mappings":";;;;;AAAA,a","file":"main.js","sourceRoot":""}
+```
+
+## 其它
+
+`source map`在调试的时候可以设置`devtool: "cheap-module-source-map"`，但是在发布到线上环境时，不能把生成的`*.map`文件上传到服务器上，不然别人可以反编译你的代码。
+
+**使用Fundebug**
+
+如果使用`fundebug`可以参考[fundebug sourceMap 文档](https://docs.fundebug.com/notifier/javascript/sourcemap/)
+
+**使用sentry**
+
+如果使用`sentry`可以参考[sentry sourceMap 文档](https://docs.sentry.io/platforms/javascript/sourcemaps/tools/webpack/)
+
+**反向解析source-map**
+
+如果只是想把简单的`*.map`反编译为源码，可以通过`reverse-sourcemap`，但是这个库很早已经就已经不维护了。
+
+```bash
+  # 安装reverse-sourcemap
+  npm install -g reverse-sourcemap
+  # 运行反编译命令
+  reverse-sourcemap -v ./debug/dist/mian.js.map -o sourcecode
+```
+
+基本上可以生成完整的源码，但是不包含第三方包。
+
+**实现源码定位**
+
+```js
+// Get file content
+const sourceMap = require('source-map');
+const readFile = function (filePath) {
+  return new Promise(function (resolve, reject) {
+    fs.readFile(filePath, {encoding:'utf-8'}, function(error, data) {
+      if (error) {
+        console.log(error)
+        return reject(error);
+      }
+      resolve(JSON.parse(data));
+    });
+  });
+};
+
+// Find the source location
+async function searchSource(filePath, line, column) {
+  const rawSourceMap = await readFile(filePath)
+  const consumer = await new sourceMap.SourceMapConsumer(rawSourceMap);
+  const res = consumer.originalPositionFor({
+    'line' : line,
+    'column' : column
+   });
+   consumer.destroy()
+  return res
+}
+```
+
+还是通过`source-map`提供的方法进行源码定位。这里的代码只是参考了别人的代码。在后期的会封装一个定制的错误监听库。
 
