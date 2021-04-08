@@ -321,7 +321,8 @@ webpack中的`ResolverFactory.js`主要是参数解析和初始化插件，`enha
 
 `normalModuleFactory`主要实现的功能如下：
 
-- 
+- 实例化`normalModuleFactory`会在构造函数中初始化要用到的如`resolverFactory`、`ruleSet`、`hooks`、`cache`等等
+- `normalModuleFactory.create`中首先创建了`resolveData`用于后期使用。调用`normalModuleFactory.hooks.factorize`钩子触发绑定的回调函数。
 
 ```js
   // ./lib/NormalModuleFactory.js
@@ -339,14 +340,91 @@ webpack中的`ResolverFactory.js`主要是参数解析和初始化插件，`enha
       this.hooks = Object.freeze({})
       // 获取在resolver工厂函数；后面会用于创建loaderResolver获取loader地址；创建normalResolver
       this.resolverFactory = resolverFactory;
+      // 序列化并把 rules 编译为固定格式（RuleSet 相关逻辑本文略过）
+      // 返回一个exct方法和references(map)
       this.ruleSet = ruleSetCompiler.compile([
         {
+          // webpack中默认的配置的rules
           rules: options.defaultRules
         },
         {
+          // 用户通过webpack.config.js中配置
           rules: options.rules
         }
       ]);
+      // 绑定钩子的回调函数
+      this.hooks.factorize.tapAsync()
+      this.hooks.resolve.tapAsync()
+    }
+    create (data, callback) {
+      // 创建resolveData对象，用于触发钩子函数的入参
+      const resolveData = {
+        contextInfo, // {issuer: '', issuerLayer: null, compiler: undefined}
+        resolveOptions, // {}
+        context, // '/Users/admin/Desktop/velen/student/webpack/debug'
+        request, // './src/index.js'
+        dependencies, // [EntryDependency]
+        fileDependencies, // LazySet {_set: Set(0), _toMerge: Set(0), _toDeepMerge: Array(0), _needMerge: false, _deopt: false}
+        missingDependencies, // LazySet {_set: Set(0), _toMerge: Set(0), _toDeepMerge: Array(0), _needMerge: false, _deopt: false}
+        contextDependencies, // LazySet {_set: Set(0), _toMerge: Set(0), _toDeepMerge: Array(0), _needMerge: false, _deopt: false}
+        createData: {}, // {}
+        cacheable: true
+      };
+      // 触发hooks.beforeResolve钩子传入resolveData
+      this.hooks.beforeResolve.callAsync(resolveData, (err, result) => {
+        // 触发hooks.factorize钩子传入resolveData；执行构造函数中绑定的factorize钩子上回调函数
+        this.hooks.factorize.callAsync(resolveData, (err, module) => {
+          // 定义工厂结果
+          const factoryResult = {
+            module,
+            fileDependencies,
+            missingDependencies,
+            contextDependencies
+          };
+          // 执行回调函数 并且传入factoryResult
+          callback(null, factoryResult)
+        })
+      })
+    }
+  }
+```
+
+`this.hooks.factorize`会调用到构造函数中绑定的钩子函数，又会触发`this.hooks.resolve.callAsync`钩子，开始创建`loaderResolver`等等对象。
+
+```js
+  // ./lib/NormalModuleFactory.js
+  class NormalModuleFactory extends ModuleFactory {
+    constructor () {
+      this.hooks.factorize.tapAsync({ name: "NormalModuleFactory", stage: 100 },
+        (resolveData, callback) => {
+          // 首先触发hooks.resolve钩子函数
+          this.hooks.resolve.callAsync(resolveData, (err, result) => {})
+        }
+      )
+      // 执行绑定钩子函数
+      this.hooks.resolve.tapAsync( { name: "NormalModuleFactory", stage: 100 },
+        (data, callback) => {
+          // 解构传入的resolveData
+          const {
+            contextInfo,
+            context,
+            dependencies,
+            request,
+            resolveOptions,
+            fileDependencies,
+            missingDependencies,
+            contextDependencies
+          } = data;
+          const dependencyType // 通过dependencies获取类型
+          // 实例化一个resolverFactory 调用resolverFactory.get方法 => 调用resolverFactory._create => 触发监听的钩子 compiler.resolverFactory.hooks.resolver.intercept({}) => 返回调用resolverFactory实例
+          const loaderResolver = this.getResolver("loader");
+
+          
+        }
+      )
+    }
+    getResolver(type, resolveOptions) {
+      return this.resolverFactory.get(type, resolveOptions);
     }
   }
 ```
