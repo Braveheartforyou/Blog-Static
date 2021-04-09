@@ -4,12 +4,48 @@
 
 这片文章记录webpack中和module相关的内容，从`compiler.hooks.make`添加入口文件收集依赖，到`loader`加载执行，再到生成`chunkGraph`然后通过`tempalte`输出chunk文件。
 
+### 调试源码修改
+
+在[调试webpack 源码](./debuge.md)代码基础上进行如下修改。
+
+**添加./src/asyncModule.js**文件
+
+```js
+  const add = (a, b) => { return a + b; }
+  export default add
+```
+
+**添加./src/syncModule.js**文件
+
+```js
+  const add = (a, b) => { return a + b; }
+  export default add
+```
+
+**修改./src/index.js**文件
+
+```js
+  import is from 'object.is'  // 这里引入一个小而美的第三方库，以此观察webpack如何处理第三方包
+  // import add from './asyncModule'
+  import syncAdd from './syncModule'
+  const add = import('./asyncModule')
+  console.log('很高兴认识你，webpack')
+  console.log(is(1,1))
+  const addNum = add(1, 2)
+  const syncAddNum = syncAdd(1, 2)
+  console.log('add', addNum, syncAddNum)
+```
+
 ### enhanced-resolve/ResolverFactory
 
 `enhanced-resolve`用来做路径解析，在webpack中的路径解析就是用的`enhanced-resolve`来做的。路径解析的实现是在`ResolverFactory`类中实现的。
 
 webpack中的`ResolverFactory.js`主要是参数解析和初始化插件，`enhanced-resolve`内部的实现先不关注，直接看`ResolverFactory.js`内部的代码实现。
 如果对`enhanced-resolve`内部实现感兴趣的可以看这篇文章[enhanced-resolve内部实现](https://juejin.cn/post/6844904056633327630#heading-10)。
+`enhanced-resolve`大致分为两个阶段：
+
+- `doResolve`开始编译根据传入的路径对文件分析。通过调用`Snapshot.createSnapshot`来生成代码片段。对生成的**文件信息对象**进行处理。
+- `finshResolve`再对**文件信息对象**和当前资源进行组装，返回组装好的对象。
 
 ```js
   // ./lib/ResolverFactory.js
@@ -391,6 +427,8 @@ webpack中的`ResolverFactory.js`主要是参数解析和初始化插件，`enha
 
 `this.hooks.factorize`会调用到构造函数中绑定的钩子函数，又会触发`this.hooks.resolve.callAsync`钩子，开始创建`loaderResolver`等等对象。
 
+通过`normalResolver`来解析普通js文件信息。
+
 ```js
   // ./lib/NormalModuleFactory.js
   class NormalModuleFactory extends ModuleFactory {
@@ -416,9 +454,130 @@ webpack中的`ResolverFactory.js`主要是参数解析和初始化插件，`enha
             contextDependencies
           } = data;
           const dependencyType // 通过dependencies获取类型
-          // 实例化一个resolverFactory 调用resolverFactory.get方法 => 调用resolverFactory._create => 触发监听的钩子 compiler.resolverFactory.hooks.resolver.intercept({}) => 返回调用resolverFactory实例
+          // 实例化一个resolverFactory 调用resolverFactory.get方法 => 调用resolverFactory._create => 触发监听的钩子 compiler.resolverFactory.hooks.resolver.intercept({}) => 返回创建的resolverFactory实例
           const loaderResolver = this.getResolver("loader");
 
+          // 需要对文件路径进行处理还判断
+
+          // 会在这个里面首先判断模块需要的loader，然后通过loaderResolver.resolve来加载对应的loader
+          const continueCallback = needCalls(2, err => {
+            // 生成当前模块需要的loader数组
+            const result = this.ruleSet.exec({
+              resource: resourceDataForRules.path,
+              realResource: resourceData.path,
+              resourceQuery: resourceDataForRules.query,
+              resourceFragment: resourceDataForRules.fragment,
+              mimetype: matchResourceData ? "" : resourceData.data.mimetype || "",
+              dependency: dependencyType,
+              descriptionData: matchResourceData
+                ? undefined
+                : resourceData.data.descriptionFileData,
+              issuer: contextInfo.issuer,
+              compiler: contextInfo.compiler,
+              issuerLayer: contextInfo.issuerLayer || ""
+            });
+            // 创建三个用于存储 根据类型分别储存result中的loader
+            const settings = {};
+            const useLoadersPost = [];
+            const useLoaders = [];
+            const useLoadersPre = [];
+
+            // 声明三个数据用于存储解析完成的loader
+            let postLoaders, normalLoaders, preLoaders;
+            
+            // 被调用3才执行回调函数
+            const continueCallback = needCalls(3, err => {
+              // 合并postLoaders, normalLoaders, preLoaders 三个数组
+              const allLoaders = postLoaders;
+              // 根据matchResourceData 调整loader顺序
+              if (matchResourceData === undefined) {
+                for (const loader of loaders) allLoaders.push(loader);
+                for (const loader of normalLoaders) allLoaders.push(loader);
+              } else {
+                for (const loader of normalLoaders) allLoaders.push(loader);
+                for (const loader of loaders) allLoaders.push(loader);
+              }
+
+              // 把当前方法中创建的loaders、resource等等合并到传入的resolveData.createData
+              Object.assign(data.createData, {
+                layer:
+                  layer === undefined ? contextInfo.issuerLayer || null : layer, // null
+                request: stringifyLoadersAndResource(
+                  allLoaders,
+                  resourceData.resource
+                ), // "/Users/19080088/Desktop/student/webpack/node_modules/babel-loader/lib/index.js!/Users/19080088/Desktop/student/webpack/debug/src/index.js",
+                userRequest, // "/Users/19080088/Desktop/student/webpack/debug/src/index.js"
+                rawRequest: request, //"./src/index.js",
+                loaders: allLoaders, //  "/Users/19080088/Desktop/student/webpack/node_modules/babel-loader/lib/index.js"
+                resource: resourceData.resource, //"/Users/19080088/Desktop/student/webpack/debug/src/index.js",
+                matchResource: matchResourceData
+                  ? matchResourceData.resource
+                  : undefined, // undefined
+                resourceResolveData: resourceData.data, // ”入口“文件对象 resourceResolveData
+                settings, // type: "javascript/auto",
+                type,  //"javascript/auto",
+                parser: this.getParser(type, settings.parser), 	// parser: { hooks: {} sourceType: "auto", },
+                generator: this.getGenerator(type, settings.generator), // getGenerator: {}
+                resolveOptions // undefined
+              });
+              // 执行hooks.resolve绑定回调函数
+              callback();
+            })
+          })
+          // 默认调用resolveRequestArray方法记载loader, 因为在很多时候我们配置的
+          this.resolveRequestArray(
+            contextInfo,
+            context,
+            elements,
+            loaderResolver,
+            resolveContext,
+            (err, result) => {
+              if (err) return continueCallback(err);
+              loaders = result;
+              continueCallback();
+            }
+          );
+
+          // 通过loaderResolver.resolve加载loader，如果当前模块没有匹配的loader
+
+          // resource with scheme
+          if (scheme) {
+          } 
+          // resource without scheme and without path
+          else if (/^($|\?|#)/.test(unresolvedResource)) {
+          }
+          // resource without scheme and with path
+          else {
+
+            // 创建normalResolver 实例
+            const normalResolver = this.getResolver(
+              "normal",
+              dependencyType
+                ? cachedSetProperty(
+                    resolveOptions || EMPTY_RESOLVE_OPTIONS,
+                    "dependencyType",
+                    dependencyType
+                  )
+                : resolveOptions
+            );
+            // 内部会调用normalResolver.resolve根据路径来生成需要的source(resolvedResourceResolveData)资源，主要包含：
+            this.resolveResource(contextInfo,
+              context,
+              unresolvedResource,
+              normalResolver,
+              resolveContext,
+              (err, resolvedResource, resolvedResourceResolveData) => {
+                if (resolvedResource !== false) {
+                  resourceData = {
+                    resource: resolvedResource,
+                    data: resolvedResourceResolveData,
+                    ...cacheParseResource(resolvedResource)
+                  };
+                }
+                continueCallback();
+              }
+            )
+          }
           
         }
       )
@@ -428,3 +587,45 @@ webpack中的`ResolverFactory.js`主要是参数解析和初始化插件，`enha
     }
   }
 ```
+
+在执行`hooks.resolve`中会用到`resolverFactory`实例上的`resolve`方法，这里又会涉及到`enhanced-resolve`执行过程，`enhanced-resolve`内部的运行这里就不细究了。`hooks.resolve`绑定的回调函数执行步骤大致如下：
+
+- 解构传入的`resolveData`，对必要的属性进行处理；通过`getResolver("loader")`生成`loaderResolver`实例，默认会调用一个`resolveRequestArray`方法，这个方法内部会调用`loaderResolver`.
+- 因为默认调用`resolveRequestArray`时候，element(要加载的loader)为0，所以直接走到通过`normalResolver`来加载文件资源。
+- `normalResolver`创建也是通过`getResolver("normal", options)`来创建，创建完成之后直接调用`this.resolveResource`来解析入口文件。
+- `this.resolveResource(..., normalResolver)`内部会直接调用`normalResolver.resolve`来对文件进行读取、依赖收集、组装对象，`resolve`内部也是走到了`enhanced-resolve`内部的操作。
+- `normalResolver.resolve`会返回对应文件生成的**文件信息对象**，执行回调函数又会执行到外部的`continueCallback`方法。
+
+简单总结来说 就是先通过`normalResolver`来解析”入口文件“的**文件信息**。
+
+伪代码调用的顺序如下：
+
+1. 创建`loaderResolver`实例；创建`continueCallback = needCalls(2, err => {})`；处理`options`
+2. 执行`resolveRequestArray(...elements)`因为`elements`就是要解析的loader，现在为空；**所以不会解析loader文件**；直接执行回调函数`continueCallback`;
+3. 因为`needCalls(2)`传入的第一个参数为`2`所以什么都没做，直接执行后面的判断； 会直接执行`this.resolveResource(..., normalResolver)`；`normalResolver`就是在上面创建的`resolverFactory`实例。
+4. `this.resolveResource`内部会直接调用`normalResolver.resolve`会对文件路径进行解析，返回一个`resolvedResourceResolveData`对象。再次调用`continueCallback`方法，现在这次会执行进`continueCallback`中定义的`callback`方法。
+5. `callback`方法中会对用户配置的`loaders`进行处理，通过`ruleSet.exec`根据传入的参数过滤要使用的`loader`对象`result`。
+6. 根据各个`loader`上的`type`属性，添加到不同的数组中，四个分类：`pre： 前置loader`、`normal： 普通loader`、`inline： 内联loader`、`post： 后置loader`；添加到不同的`postLoaders`, `normalLoaders`, `preLoaders`类型中。
+7. 把当前创建的`loaders`、`parser`、`generator`等等合并到传入的`resolveData.createData`对象上；执行`hooks.resolve`中的回调函数。
+
+> 径解析返回的对象大致如下：
+resolvedResourceResolveData {
+  __innerRequest:'./src/index.js'
+  request:undefined
+  relativePath:'./src/index.js'
+  path:'/Users/19080088/Desktop/student/webpack/debug/src/index.js'
+  fragment:''
+  module:false
+  context:{issuer: '', issuerLayer: null, compiler: undefined}
+  descriptionFileData:{name: 'debug', version: '1.0.0', description: '', main: 'start.js', scripts: {…}, …}
+}
+
+#### ruleSet
+
+在实例化`NormalModuleFactory`时候，通过`ruleSetCompiler.compile([])`创建一个`ruleSet`对象，这个对象相当于一个规则过滤器，会将`resourcePath`应用于所有的`module.rules`规则，从而筛选出所需的`loader`。其中最重要的两个方法是：
+
+- 实例方法`ruleSet.exec()`；返回需要解析的loader
+- 实例对象`references:Map()`用于存储需要模块要用到`loader`
+
+实例化后的`RuleSet`就可以用于为每个模块获取对应的`loader`。这个实例化的`RuleSet`就是我们上面提到的`NormalModuleFactory`实例上的`this.ruleSet`属性。工厂每次创建一个新的`NormalModule`时都会调用`RuleSet`实例的`ruleSet.exec()`方法，只有当通过了各类测试条件，才会将该`loader push`到结果数组中。
+
