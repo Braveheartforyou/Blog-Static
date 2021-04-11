@@ -4,7 +4,7 @@
 
 这片文章记录webpack中和module相关的内容，从`compiler.hooks.make`添加入口文件收集依赖，到`loader`加载执行，再到生成`chunkGraph`然后通过`tempalte`输出chunk文件。
 
-### 调试源码修改
+## 调试源码修改
 
 在[调试webpack 源码](./debuge.md)代码基础上进行如下修改。
 
@@ -35,6 +35,8 @@
   const syncAddNum = syncAdd(1, 2)
   console.log('add', addNum, syncAddNum)
 ```
+
+## 相关知识
 
 ### enhanced-resolve/ResolverFactory
 
@@ -133,7 +135,17 @@ webpack中的`ResolverFactory.js`主要是参数解析和初始化插件，`enha
 
 `ResolverFactory`类会在`compiler`实例化时被引用，在实例化`NormalModuleFactory`类的时候传入进去，因为在`NormalModuleFactory`中会通过`ResolverFactory.get`会创建两个`Resolver`实例。分别是`loaderResolver`、`normalResolver`用于解析`loader`路径和普通模块路径。
 
-### 添加入口文件
+### ruleSet
+
+
+在实例化`NormalModuleFactory`时候，通过`ruleSetCompiler.compile([])`创建一个`ruleSet`对象，这个对象相当于一个规则过滤器，会将`resourcePath`应用于所有的`module.rules`规则，从而筛选出所需的`loader`。其中最重要的两个方法是：
+
+- 实例方法`ruleSet.exec()`；返回需要解析的loader
+- 实例对象`references:Map()`用于存储需要模块要用到`loader`
+
+实例化后的`RuleSet`就可以用于为每个模块获取对应的`loader`。这个实例化的`RuleSet`就是我们上面提到的`NormalModuleFactory`实例上的`this.ruleSet`属性。工厂每次创建一个新的`NormalModule`时都会调用`RuleSet`实例的`ruleSet.exec()`方法，只有当通过了各类测试条件，才会将该`loader push`到结果数组中。
+
+## 添加入口文件
 
 触发`compiler.hooks.make`钩子会执行`EntryPlugin.js`中绑定的回调函数。`EntryPlugin`插件会在`lib/WebpackOptionsApply.js`中初始化，并且对`entryOptions`进行处理。代码如下：
 
@@ -176,7 +188,7 @@ webpack中的`ResolverFactory.js`主要是参数解析和初始化插件，`enha
 
 在`compiler.hooks.make`中首先会实例化一个`EntryDependency`类，调用`compilation.addEntry`方法。下面看compilation的实现。
 
-#### compilation.addEntry 实现
+### compilation.addEntry 实现
 
 `compilation` 对象代表了一次资源版本构建。**当运行 webpack 开发环境中间件时，每当检测到一个文件变化，就会创建一个新的 compilation，从而生成一组新的编译资源**。一个 compilation 对象表现了当前的模块资源、编译生成资源、变化的文件、以及被跟踪依赖的状态信息。compilation 对象也提供了很多关键时机的回调，以供插件做自定义处理时选择使用。
 
@@ -351,7 +363,7 @@ webpack中的`ResolverFactory.js`主要是参数解析和初始化插件，`enha
 
 下面进入`normalModuleFactory`文件中看一下`create`中做了那些事情。
 
-### normalModuleFactory.create
+## normalModuleFactory.create
 
 `normalModuleFactory`就是在`compiler`中创建的`NormalModuleFactory`的实例。从`normalModuleFactory.create`开始`module`、`chunk`创建和各种loader的执行。下面看一下`normalModuleFactory`在webpack中都做了那些工作。
 
@@ -620,12 +632,192 @@ resolvedResourceResolveData {
   descriptionFileData:{name: 'debug', version: '1.0.0', description: '', main: 'start.js', scripts: {…}, …}
 }
 
-#### ruleSet
+**NormalModuleFactory.hooks.resolve(callback)**
 
-在实例化`NormalModuleFactory`时候，通过`ruleSetCompiler.compile([])`创建一个`ruleSet`对象，这个对象相当于一个规则过滤器，会将`resourcePath`应用于所有的`module.rules`规则，从而筛选出所需的`loader`。其中最重要的两个方法是：
+在通过`normalResolver`解析完成普通文件信息、通过`loaderResolver`解析完成`loaders`文件地址后，这里面主要就是实例化`NormalModule`对象，并且把这个对象传递下；
+触发三个钩子`NormalModuleFactory.hooks.resolve`、`NormalModuleFactory.hooks.createModule`、`NormalModuleFactory.hooks.module`
 
-- 实例方法`ruleSet.exec()`；返回需要解析的loader
-- 实例对象`references:Map()`用于存储需要模块要用到`loader`
+在创建完成`NormalModule`之后，把`factoryResult`包含了`module(NormalModule实例)`的对象返回到`compilation._factorizeModule`的回调函数中。
 
-实例化后的`RuleSet`就可以用于为每个模块获取对应的`loader`。这个实例化的`RuleSet`就是我们上面提到的`NormalModuleFactory`实例上的`this.ruleSet`属性。工厂每次创建一个新的`NormalModule`时都会调用`RuleSet`实例的`ruleSet.exec()`方法，只有当通过了各类测试条件，才会将该`loader push`到结果数组中。
+## 生成chunksGraph
 
+在执行`compilation._factorizeModule`之后执行过程如下：
+
+1. 执行`compilation.addModule/compilation._addModule`，首先会往`compilation.moduleGraph`中会添加当前module之间的关系。然后再往`compilation.modules`中添加当前的`modules`.
+2. 再执行`compilation.buildModule/compilation._buildModule`，这个就会执行的`normalModule.build`方法。还触发了`compiler.hooks.buildModule`来对`sourceMap`进行配置。
+3. `compilation._buildModule`内部会执行到`module.build(NormalModule实例)`方法，开始处理`module`，通过`runloader`运行`loader`来转换`module`生成`source`和`AST`代码。并且递归处理依赖。
+4. 处理完成当前`module`后，递归处理`Dependencies`依赖项，并且在`compliation.moduleGraph`中维护各个`module`之间的关系。
+
+### module.build
+
+下面就根据上面的执行步骤来看**webpack源码**中的实现。
+
+```js
+  // ./lib/compilation.js
+  // 开始对当前module进行处理
+  module.build(
+    this.options, // 配置项
+    this, // compilation实例
+    this.resolverFactory.get("normal", module.resolveOptions), // 生成normalResolver(ResolverFactory实例)
+    this.inputFileSystem, // 文件系统
+    err => {
+      this._modulesCache.store(module.identifier(), null, module, err => {
+        if (currentProfile !== undefined) {
+          currentProfile.markStoringEnd();
+        }
+        if (err) {
+          this.hooks.failedModule.call(module, err);
+          return callback(new ModuleStoreError(module, err));
+        }
+        this.hooks.succeedModule.call(module);
+        return callback();
+      }
+    }
+  )
+```
+
+`module.build`会传入当前的`options`和`compilation`实例等等入参，会执行到`normalModule.build`方法。代码如下：
+
+```js
+  // ./lib/NormalModules.js
+  class NormalModules extends Modules {
+    /**
+    * @param {WebpackOptions} options webpack options
+    * @param {Compilation} compilation the compilation
+    * @param {ResolverWithOptions} resolver the resolver
+    * @param {InputFileSystem} fs the file system
+    * @param {function(WebpackError=): void} callback callback function
+    * @returns {void}
+    */
+    doBuild(options, compilation, resolver, fs, callback) {
+      // 生成loaderContext
+      const loaderContext = this.createLoaderContext(
+        resolver,
+        options,
+        compilation,
+        fs
+      );
+      // 通过createSource生成source对象；并且调用build中写入的回调函数生成AST
+      const processResult = (err, result) => {
+        // 创建_source
+        this._source = this.createSource(
+          options.context,
+          this.binary ? asBuffer(source) : asString(source),
+          sourceMap,
+          compilation.compiler.root
+        );
+        // 如果经过loader解析已经生成了AST代码，直接赋值给normalModule._ast
+        this._ast =
+          typeof extraInfo === "object" &&
+          extraInfo !== null &&
+          extraInfo.webpackAST !== undefined
+            ? extraInfo.webpackAST
+            : null;
+        // 执行回调函数，并且返回
+        return callback()
+      }
+      // 运行loader
+      runLoaders(
+        {
+          resource: this.resource,
+          loaders: this.loaders,
+          context: loaderContext,
+          processResource: (loaderContext, resource, callback) => {
+            // 判断是否存在scheme
+          }
+        }, 
+        (err, result) => {
+          this.buildInfo.cacheable = result.cacheable;
+          // 把loader编译后的result结果传入processResult生成_source
+          processResult(err, result.result);
+        }
+      ) 
+    }
+    /**
+    * @param {WebpackOptions} options webpack options
+    * @param {Compilation} compilation the compilation
+    * @param {ResolverWithOptions} resolver the resolver
+    * @param {InputFileSystem} fs the file system
+    * @param {function(WebpackError=): void} callback callback function
+    * @returns {void}
+    */
+    build(options, compilation, resolver, fs, callback) {
+      // 初始化参数
+      this.buildInfo = {
+        cacheable: false,
+        parsed: true,
+        fileDependencies: undefined,
+        contextDependencies: undefined,
+        missingDependencies: undefined,
+        buildDependencies: undefined,
+        valueDependencies: undefined,
+        hash: undefined,
+        assets: undefined,
+        assetsInfo: undefined
+      };
+      // 首先会执行doBuild中的代码，才会执行callback中的代码
+      return this.doBuild(options, compilation, resolver, fs, err => {
+        // 对通过parser.parse处理完成AST代码进行处理
+        const handleParseResult = result => {
+          // 对依赖进行排序
+          this.dependencies.sort(
+            concatComparators(
+              compareSelect(a => a.loc, compareLocations),
+              keepOriginalOrder(this.dependencies)
+            )
+          );
+          // 初始化buildHash hex格式
+          this._initBuildHash(compilation);
+          this._lastSuccessfulBuildMeta = this.buildMeta;
+          return handleBuildDone();
+        };
+        const handleBuildDone = () => {
+          // 对buildInfo.fileDependencies、buildInfo.missingDependencies、buildInfo.contextDependencies中的依赖项进行检测
+          // 通过fileSystemInfo读取依赖文件内容
+          compilation.fileSystemInfo.createSnapshot(
+            startTime,
+            this.buildInfo.fileDependencies,
+            this.buildInfo.contextDependencies,
+            this.buildInfo.missingDependencies,
+            snapshotOptions,
+            (err, snapshot) => {
+              // 重置当前buildInfo 三个依赖项
+              this.buildInfo.fileDependencies = undefined;
+              this.buildInfo.contextDependencies = undefined;
+              this.buildInfo.missingDependencies = undefined;
+              // 把snapshot存储到buildInfo中
+              this.buildInfo.snapshot = snapshot;
+              // 执行回调函数
+              callback()
+            }
+          )
+        }
+        let result;
+        try {
+          // 对读取的source来生成AST代码
+          result = this.parser.parse(this._ast || this._source.source(), {
+            current: this,
+            module: this,
+            compilation: compilation,
+            options: options
+          });
+        } catch (e) {
+          handleParseError(e);
+          return;
+        }
+        // 转换完成进行递归处理
+        handleParseResult(result);
+      })
+    }
+  }
+```
+
+上面代码执行过程如下：
+
+1. `doBuild`方法内部通过`createLoaderContext`创建`loaderContext`。`loaderContext` 对象和这个 `module` 是**一一对应**的关系，而这个 `module` 所使用的**所有 loaders 都会共享这个 loaderContext 对象**，每个 `loader`执行的时候上下文就是这个 `loaderContext` 对象，所以可以在我们写的 `loader` 里面通过 `this` 来访问。
+2. `runLoaders`是`loader-runner`独立的npm包来提供，如果对loader的实现感兴趣的可以看我另一篇文章[loader-runner 详解](./loader.md)。在`runloaders`的回调函数中会返回当前`loader`对`module`代码的解析结果`result`。
+3. 在生成`result`之后会调用`processResult`方法，通过`createSource`来生成`_soruce`对象。`createSource`内部判断是要生成的**source类型**，分为三类`RawSource(只包含源码)`、`SourceMapSource(源码内容、sourceMap内容、sourceMap路径)`、`OriginalSource(源码内容、sourceMap路径)`有兴趣可以看一下实现。判断是否生成ast代码，如果存在就保存。执行`doBuild`传入的回调函数。
+4. 在`callback`回调函数中，首先通过`parser.parse(source/ast)`来生成`AST(抽象语法树)`，这里的`parser`就是`JavascriptParser`实例，内部也是通过`acorn`来实现。通过`parser.parse`转换的代码已经解析完成`dependencies`，并且把`dependencies`分了为两个数组存储，分别是`blocks(异步依赖)`、`dependencies`同步数组。
+5. `parser.parse(source/ast)`执行完成返回`result`对象后，通过`_initBuildHash`创建`buildHash`，处理了`fileDependencies`等依赖文件，执行回调函数。
+
+在执行到`doBuild`回调方法中的`parser.parse`会在回到`compilation`中的`module.build`中的回调函数。
