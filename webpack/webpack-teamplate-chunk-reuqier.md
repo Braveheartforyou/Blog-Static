@@ -4,6 +4,15 @@
 
 这片文章记录webpack中和module相关的内容，从`compiler.hooks.make`添加入口文件收集依赖，到`loader`加载执行，再到生成`chunkGraph`然后通过`tempalte`输出chunk文件。
 
+代码调试断点如下图所示：
+
+**moduleGraph 调试断点**
+![moduleGraph 调试断点](./images/moduleGraph.png)
+**chunkGraph 调试断点**
+![moduleGraph 调试断点](./images/moduleGraph.png)
+**template 调试断点**
+![moduleGraph 调试断点](./images/moduleGraph.png)
+
 ## 调试源码修改
 
 在[调试webpack 源码](./debuge.md)代码基础上进行如下修改。
@@ -639,7 +648,7 @@ resolvedResourceResolveData {
 
 在创建完成`NormalModule`之后，把`factoryResult`包含了`module(NormalModule实例)`的对象返回到`compilation._factorizeModule`的回调函数中。
 
-## 生成chunksGraph
+## 生成moduleGraph
 
 在执行`compilation._factorizeModule`之后执行过程如下：
 
@@ -647,6 +656,51 @@ resolvedResourceResolveData {
 2. 再执行`compilation.buildModule/compilation._buildModule`，这个就会执行的`normalModule.build`方法。还触发了`compiler.hooks.buildModule`来对`sourceMap`进行配置。
 3. `compilation._buildModule`内部会执行到`module.build(NormalModule实例)`方法，开始处理`module`，通过`runloader`运行`loader`来转换`module`生成`source`和`AST`代码。并且递归处理依赖。
 4. 处理完成当前`module`后，递归处理`Dependencies`依赖项，并且在`compliation.moduleGraph`中维护各个`module`之间的关系。
+
+### 修改webpack.config.js
+
+再修改一下`webpack.config.js`中的代码如下：
+
+```js
+  const path = require("path");
+  module.exports = {
+    mode: "production",
+    context: __dirname,
+    devtool: "source-map",
+    entry: "./src/index.js",
+    output: {
+      filename: "[name].[chunkhash].js",
+      chunkFilename: "[name].bundle.[chunkhash:8].js",
+      path: path.join(__dirname, "./dist")
+    },
+    module: {
+      rules: [
+        {
+          test: /\.js$/,
+          use: ["babel-loader"],
+          exclude: /node_modules/
+        }
+      ]
+    },
+    optimization: {
+      usedExports: true,
+      splitChunks: {
+        cacheGroups: {
+          //缓存组
+          common: {
+            //公共模块
+            chunks: "initial",
+            name: "common",
+            minSize: 10, //大小超过100个字节
+            minChunks: 1 //最少引入了3次
+          }
+        }
+      }
+    }
+  };
+```
+
+可以运行一下命令测试`node ./debug/start.js`可以正常生成文件表示配置成功。
 
 ### module.build
 
@@ -821,3 +875,144 @@ resolvedResourceResolveData {
 5. `parser.parse(source/ast)`执行完成返回`result`对象后，通过`_initBuildHash`创建`buildHash`，处理了`fileDependencies`等依赖文件，执行回调函数。
 
 在执行到`doBuild`回调方法中的`parser.parse`会在回到`compilation`中的`module.build`中的回调函数。
+
+会执行到`compilation.processModuleDependencies/compilation._processModuleDependencies`递归当前`module.dependencies(同步依赖项)`、`module.blocks(异步依赖项)`通过`moduleGraph.setParents`来补全当前`module`和依赖项之间的关系。
+
+代码如下：
+
+```js
+  // ./lib/compilation.js
+  class compilation {
+    // 已经通过loader和parser处理完成的module对象
+    _processModuleDependencies(module, callback) {
+
+      /**
+       * @type {Array<{factory: ModuleFactory, dependencies: Dependency[], originModule: Module|null}>}
+       */
+      // 用于存储当前依赖数据
+      const sortedDependencies = [];
+
+      let currentBlock = module;
+
+      // 循环Dependencies方法 同步依赖存储在dependencies数组中；异步依赖存储在blocks数组中；
+      const processDependenciesBlock = block => {
+        // 2. 循环同步依赖
+        if (block.dependencies) {
+          currentBlock = block;
+          // 调用processDependency处理dependencies内部的对象，并且存储在sortedDependencies中
+          for (const dep of block.dependencies) processDependency(dep);
+        }
+        // 3. 循环异步依赖
+        if (block.blocks) {
+          for (const b of block.blocks) processDependenciesBlock(b);
+        }
+      };
+      try {
+        // 1. 开始递归循环处理当前模块的依赖项
+        processDependenciesBlock(module);
+      } catch (e) {
+        return callback(e);
+      }
+      // 异步循环调用sortedDependencies 内部的依赖；内部在调用handleModuleCreation,前面的步骤再走一遍
+      asyncLib.forEach(
+        sortedDependencies,
+        (item, callback) => {
+          this.handleModuleCreation(item, err => {
+            // In V8, the Error objects keep a reference to the functions on the stack. These warnings &
+            // errors are created inside closures that keep a reference to the Compilation, so errors are
+            // leaking the Compilation object.
+            if (err && this.bail) {
+              // eslint-disable-next-line no-self-assign
+              err.stack = err.stack;
+              return callback(err);
+            }
+            callback();
+          });
+        },
+        err => {
+          this.processDependenciesQueue.decreaseParallelism();
+          // 调用回调函数
+          return callback(err);
+        }
+      );
+    }
+  }
+```
+
+在这个递归当前模块(`newModule:normalModule`)的依赖项再通过`compilation.handleModuleCreation`前面的流程在走一遍，执行完成之后会直接走到`compilation.addModuleTree`调用的回调函数中。代码如下：
+
+```js
+  // ./lib/compilation.js
+  class compilation {
+    _addEntryItem(context, entry, target, options, callback) {
+      this.addModuleTree({
+          context,
+          dependency: entry,
+          contextInfo: entryData.options.layer
+            ? { issuerLayer: entryData.options.layer }
+            : undefined
+        }, (err, module) => {
+          if (err) {
+            this.hooks.failedEntry.call(entry, options, err);
+            return callback(err);
+          }
+          this.hooks.succeedEntry.call(entry, options, module);
+          return callback(null, module);
+        }
+      )
+    }
+  }
+```
+
+回调会执行到`compilation._addEntryItem`中的`compilation.addModuleTree`调用使用的回调函数，触发`compilation.hooks.succeedEntry`钩子表示完成入口文件的`module`解析。
+
+在执行回调各种`compliation`中的钩子和`compiler`中的钩子，最终会执行到`compilation.seal`方法，开始生成`chunk`、`chunkGraph`。
+
+## 生成chunkGraph
+
+在生成`chunkGraph`一些主要的概念。
+
+- `module`: 就是不同的资源文件，包含了你的代码中提供的例如：`js/css/图片` 等文件，在编译环节，`webpack`会根据不同 `module` 之间的依赖关系去组合生成 `chunk`.
+- `moduleGraph`: 用于存储各个`module`之间的关系，对于后面生成`chunkGraph`也要用到。
+- `entryPoint/chunkGroup`: 由一个或者多个`chunk`组成，在生成`chunkGraph`时候要用到。
+- `chunkGraph`: 用于储存`module`、`chunk`、`chunkGroup` 三者之间的关系
+- `chunk`: 由一个或者多个`module`组成，它是 webpack 编译打包后输出的最终文件；
+
+`moduleGraph`中比较重要的两个`Map`，分别是`_dependencyMap`中储存了依赖之间的关系，`_moduleMap`中存储了各个模块之间的关系。
+
+```js
+// ./lib/compilation.js
+
+class compilation {
+  seal (callback) {
+    // 初始化ChunkGraph
+    const chunkGraph = new ChunkGraph(this.moduleGraph);
+    // 保存chunkGraph实例
+    this.chunkGraph = chunkGraph;
+    // 循环modules
+    for (const module of this.modules) {
+      // 首先设置chunkGraph和module的关系
+      // chunkGraphForModuleMap 中添加 key为module value为 chunkGraph 的值
+      ChunkGraph.setChunkGraphForModule(module, chunkGraph);
+    }
+    this.hooks.seal.call();
+    // 执行三个钩子
+    this.hooks.optimizeDependencies.call(this.modules)
+    this.hooks.afterOptimizeDependencies.call(this.modules);
+    this.hooks.beforeChunks.call();
+    // 初始化chunkGraph Map类型
+    const chunkGraphInit = new Map();
+    // 循环入口文件
+    for (const [name, { dependencies, includeDependencies, options }] of this.entries) {
+      // 如果compilation.namedChunks中存在 取出；如果不存在 chunk = new Chunk(name) ,添加namedChunks
+      const chunk = this.addChunk(name);
+      // 初始化entrypoint, Entrypoint继承 ChunkGraph
+      const entrypoint = new Entrypoint(options);
+
+    }
+
+
+  }
+}
+
+```
