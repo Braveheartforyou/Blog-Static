@@ -9,7 +9,7 @@
 **moduleGraph 调试断点**
 ![moduleGraph 调试断点](./images/moduleGraph.png)
 **chunkGraph 调试断点**
-![moduleGraph 调试断点](./images/moduleGraph.png)
+![chunkGraph 调试断点](./images/moduleGraph.png)
 **template 调试断点**
 ![moduleGraph 调试断点](./images/moduleGraph.png)
 
@@ -980,6 +980,10 @@ resolvedResourceResolveData {
 
 `moduleGraph`中比较重要的两个`Map`，分别是`_dependencyMap`中储存了依赖之间的关系，`_moduleMap`中存储了各个模块之间的关系。
 
+### 初始化
+
+因为在上一个阶段解析`module`的时候就已经生成了`module`和`moduleGraph`，在`seal`的初始化阶段会创建`entryPoint/ChunkGroup`、`chunkGraph`、`chunk`等实例，并且建立`module`、`chunk`、`chunkGraph`实例上添加对应的关联。把`chunkGraph`添加到`chunkGroups`中。
+
 ```js
 // ./lib/compilation.js
 
@@ -1006,13 +1010,97 @@ class compilation {
     for (const [name, { dependencies, includeDependencies, options }] of this.entries) {
       // 如果compilation.namedChunks中存在 取出；如果不存在 chunk = new Chunk(name) ,添加namedChunks
       const chunk = this.addChunk(name);
-      // 初始化entrypoint, Entrypoint继承 ChunkGraph
+      // 初始化entrypoint, Entrypoint继承 ChunkGroup
       const entrypoint = new Entrypoint(options);
-
+      
+      // 添加setRuntimeChunk
+      if (!options.dependOn && !options.runtime) {
+        entrypoint.setRuntimeChunk(chunk);
+      }
+      // 保存关系
+      entrypoint.setEntrypointChunk(chunk);
+      this.namedChunkGroups.set(name, entrypoint);
+      this.entrypoints.set(name, entrypoint);
+      this.chunkGroups.push(entrypoint);
+      // 在chunk实例中的gourps添加entrypoint；在entrypoint中的chunks添加 chunk；
+      connectChunkGroupAndChunk(entrypoint, chunk);
+      // 循环入口文件列表
+      for (const dep of [...this.globalEntry.dependencies, ...dependencies]) {
+        // 添加entrypoint.origins
+        entrypoint.addOrigin(null, { name }, /** @type {any} */ (dep).request);
+        // 获取moduleGraph保存的module
+        const module = this.moduleGraph.getModule(dep);
+        // 如果module存在
+        if (module) {
+          // 建立chunk、module、entrypoint之间的关系
+          chunkGraph.connectChunkAndEntryModule(chunk, module, entrypoint);
+          // 根据各个模块依赖的深度（多次依赖取最小值）设置 module.depth，入口模块则为 depth = 0。
+          this.assignDepth(module);
+          // 获取chunkGraphInit内部保存的modulelist
+          const modulesList = chunkGraphInit.get(entrypoint);
+          // 如果没有就存储
+          if (modulesList === undefined) {
+            chunkGraphInit.set(entrypoint, [module]);
+          } else {
+            modulesList.push(module);
+          }
+        }
+      }
     }
-
-
+    // 生成ChunkGraph
+    buildChunkGraph(this, chunkGraphInit);
   }
 }
 
 ```
+
+执行代码大致如下：
+
+- `this.hooks.seal.call();`: 触发插件 `WarnCaseSensitiveModulesPlugin`：模块文件路径需要区分大小写的警告。
+- `this.hooks.optimizeDependencies.call(this.modules);`，`mode:production` 模式会触发插件：
+  1. `SideEffectsFlagPlugin`：识别 package.json 或者 module.rules 的 sideEffects 标志（纯的 ES2015 模块)，安全地删除未用到的 export 导出
+  2. `FlagDependencyUsagePlugin`：编译时标记依赖 unused harmony export 用于 Tree shaking
+
+循环入口文件`compilation.entries`为每个入口文件创建`chunk`和`entryPoint(chunkGroup)`实例。
+
+`const chunk = this.addChunk(name);`内部如果不存在当前`chunk`会创建并且缓存，如果存在直接返回。
+
+在创建完成`chunk`和`chunkGroup`之后，通过调用`GraphHelpers.connectChunkGroupAndChunk(entrypoint, chunk)`来建立它们之间的关系；
+
+循环`entries.dependencies`获取当前的`dep`然后通过`moduleGraph.getModule(dep)`获取当入口模块的`入口 module`实例；然后通过`chunkGraph.connectChunkAndEntryModule(chunk, module, entrypoint);`来建立`chunk`、`入口 module`、`entryPoint(chunkGroup)`之间的联系。(**内部module的依赖暂时还没有创建**)
+
+执行`this.assignDepth(module);`根据各个模块依赖的深度（多次依赖取最小值）设置 `module.depth`，入口模块则为 `depth = 0`。
+  
+同时内部会有个比较特殊的 `runtimeChunk`(当 webpack 最终编译完成后包含的 `webpack runtime` 代码最终会注入到 `runtimeChunk` 当中)。
+
+### 创建 chunkGraph
+
+下面通过`buildChunkGraph(this, chunkGraphInit);`来生成`chunkGraph`。两个参数`this`其实就是`compilation`；`chunkGraphInit`是一个`Map`类型的数据，当前它只有一个值，这个值的`key`就是循环入口文件创建的`entryOption/chunkGroup`实例，这个实例还包含的`chunks`；这个值的`value`就是当前入口文件的`module`实例，其中包含了内部的module依赖`dependencies`。
+
+`buildChunkGraph` 用于生成并优化 `chunk` 依赖图，建立起各模块之前的关系。 
+
+```js
+  // PART ONE
+  visitModules(compilation, inputChunkGroups, chunkGroupInfoMap, chunkDependencies, blocksWithNestedBlocks, allCreatedChunkGroups);
+  // PART TWO
+  connectChunkGroups(blocksWithNestedBlocks, chunkDependencies, chunkGroupInfoMap);
+  // Cleaup work
+  cleanupUnconnectedGroups(compilation, allCreatedChunkGroups);
+```
+
+#### 第一阶段
+
+第一阶段主要建立了 `chunkGroup`,`chunk`,`module`（包括同步异步）之间的从属关系。现在`compilation`中的`moduleGraph`值保存了`modules`之间的关系，并没有整合为层级结构。
+
+先执行：
+
+```js
+  // 循环compilation.modules根据compilation.moduleGraph保存的父子关系，生成层级关系的moduleGraph保存在blockInfoMap中
+  const blockInfoMap = extraceBlockInfoMap(compilation);
+```
+
+`blockInfoMap`就是维护了层级关系的`moduleGraph`，数据结构如下：
+
+![blockInfoMap 数据结构](./images/blockModulesMap.png)
+
+
