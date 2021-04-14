@@ -146,7 +146,6 @@ webpack中的`ResolverFactory.js`主要是参数解析和初始化插件，`enha
 
 ### ruleSet
 
-
 在实例化`NormalModuleFactory`时候，通过`ruleSetCompiler.compile([])`创建一个`ruleSet`对象，这个对象相当于一个规则过滤器，会将`resourcePath`应用于所有的`module.rules`规则，从而筛选出所需的`loader`。其中最重要的两个方法是：
 
 - 实例方法`ruleSet.exec()`；返回需要解析的loader
@@ -1103,4 +1102,4 @@ class compilation {
 
 ![blockInfoMap 数据结构](./images/blockModulesMap.png)
 
-
+循环
