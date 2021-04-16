@@ -175,3 +175,6 @@ module.exports = function (content, map, meta) {
 - `this.data`: 在 `pitch 阶段`和 `normal 阶段`之间共享的 `data` 对象。
 - `this.loaders`: 所有 `loader 组成`的数组。它在 pitch 阶段的时候是可以写入的。
 - `this.loaderIndex`: 当前 loader 在 loader 数组中的**索引**。
+- `this.hot`: loaders 的 HMR（热模块替换）相关信息。
+
+
