@@ -1,0 +1,28 @@
+{
+  "name": "serviceworker",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@babel/preset-env": "^7.7.7",
+    "cordova-plugins": "^1.2.0",
+    "koa": "^2.11.0",
+    "koa-router": "^7.4.0",
+    "koa-static": "^5.0.0",
+    "nodemon": "^1.19.4"
+  },
+  "dependencies": {
+    "@babel/core": "^7.7.7",
+    "@babel/node": "^7.7.7",
+    "vue": "^2.6.11",
+    "xsy-cordova": "^1.0.0",
+    "xsy-cordova-plugins": "0.0.23",
+    "xsy-plugins": "^0.2.29"
+  }
+}
